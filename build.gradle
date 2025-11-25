@@ -1,0 +1,137 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'com.example'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Solace JCSMP API
+    implementation 'com.solacesystems:sol-jcsmp:10.24.0'
+
+    // Picocli for CLI parsing
+    implementation 'info.picocli:picocli:4.7.5'
+    annotationProcessor 'info.picocli:picocli-codegen:4.7.5'
+
+    // Oracle JDBC Driver (Java 8 compatible)
+    implementation 'com.oracle.database.jdbc:ojdbc8:19.23.0.0'
+
+    // Test dependencies
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.mockito:mockito-core:3.12.4'
+
+    // H2 in-memory database for integration tests
+    testImplementation 'com.h2database:h2:2.2.224'
+
+    // Testcontainers for integration tests
+    testImplementation 'org.testcontainers:testcontainers:1.19.3'
+    testImplementation 'org.testcontainers:oracle-xe:1.19.3'
+}
+
+application {
+    mainClass = 'com.example.solace.SolaceCli'
+}
+
+// Configure annotation processing for picocli
+compileJava {
+    options.compilerArgs += ["-Aproject=${project.group}/${project.name}"]
+}
+
+// Shadow JAR configuration (equivalent to Maven shade plugin)
+shadowJar {
+    archiveBaseName.set('solace-cli')
+    archiveClassifier.set('all')
+    archiveVersion.set(version)
+    mergeServiceFiles()
+    manifest {
+        attributes 'Main-Class': 'com.example.solace.SolaceCli'
+    }
+}
+
+// Unit tests configuration
+test {
+    useJUnit()
+
+    // Exclude integration tests from unit test task
+    exclude '**/*IT.class'
+    exclude '**/*IntegrationTest.class'
+
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+}
+
+// Integration tests configuration
+task integrationTest(type: Test) {
+    description = 'Runs integration tests.'
+    group = 'verification'
+
+    useJUnit()
+
+    // Include only integration tests
+    include '**/*IT.class'
+    include '**/*IntegrationTest.class'
+
+    // Run after unit tests
+    shouldRunAfter test
+
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+
+    // Pass environment variables to tests
+    environment 'SOLACE_HOST', System.getenv('SOLACE_HOST') ?: ''
+    environment 'SOLACE_VPN', System.getenv('SOLACE_VPN') ?: 'default'
+    environment 'SOLACE_USERNAME', System.getenv('SOLACE_USERNAME') ?: 'admin'
+    environment 'SOLACE_PASSWORD', System.getenv('SOLACE_PASSWORD') ?: 'admin'
+}
+
+// Make 'check' task run integration tests as well
+check.dependsOn integrationTest
+
+// Build task should create shadow jar
+build.dependsOn shadowJar
+
+// Task to run only with external Solace broker
+task testWithExternalSolace(type: Test) {
+    description = 'Runs tests using external Solace broker (requires SOLACE_HOST env var).'
+    group = 'verification'
+
+    useJUnit()
+
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+
+    // Pass environment variables to tests
+    environment 'SOLACE_HOST', System.getenv('SOLACE_HOST') ?: ''
+    environment 'SOLACE_VPN', System.getenv('SOLACE_VPN') ?: 'default'
+    environment 'SOLACE_USERNAME', System.getenv('SOLACE_USERNAME') ?: 'admin'
+    environment 'SOLACE_PASSWORD', System.getenv('SOLACE_PASSWORD') ?: 'admin'
+
+    doFirst {
+        if (!System.getenv('SOLACE_HOST')) {
+            throw new GradleException('SOLACE_HOST environment variable must be set')
+        }
+    }
+}
+
+// Wrapper task configuration
+wrapper {
+    gradleVersion = '8.5'
+    distributionType = Wrapper.DistributionType.BIN
+}
