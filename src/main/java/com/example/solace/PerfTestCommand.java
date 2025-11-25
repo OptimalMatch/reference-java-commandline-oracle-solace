@@ -5,10 +5,12 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
+import java.io.File;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -70,12 +72,32 @@ public class PerfTestCommand implements Callable<Integer> {
             description = "Measure end-to-end latency (requires both publish and consume)")
     boolean measureLatency;
 
+    @Option(names = {"--exclude-file"},
+            description = "File containing exclusion patterns (tests exclusion filtering overhead)")
+    File excludeFile;
+
+    @Option(names = {"--exclude-rate"},
+            description = "Percentage of messages that should match exclusion patterns (0-100, default: 10)",
+            defaultValue = "10")
+    int excludeRate;
+
+    @Option(names = {"--exclude-content"},
+            description = "Also check message content against exclusion patterns")
+    boolean excludeByContent;
+
+    private ExclusionList exclusionList;
+
     // Statistics
     private final AtomicInteger sentCount = new AtomicInteger(0);
     private final AtomicInteger receivedCount = new AtomicInteger(0);
+    private final AtomicInteger excludedCount = new AtomicInteger(0);
     private final AtomicInteger errorCount = new AtomicInteger(0);
     private final AtomicLong totalSendTime = new AtomicLong(0);
+    private final AtomicLong totalExclusionCheckTime = new AtomicLong(0);
     private final List<Long> latencies = Collections.synchronizedList(new ArrayList<Long>());
+
+    // For generating excludable messages
+    private static final String EXCLUDE_MARKER = "EXCLUDE-TEST-";
 
     private volatile boolean running = true;
     private long testStartTime;
@@ -93,6 +115,18 @@ public class PerfTestCommand implements Callable<Integer> {
         printTestConfiguration();
 
         try {
+            // Load exclusion list if specified
+            if (excludeFile != null) {
+                if (!excludeFile.exists()) {
+                    System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    return 1;
+                }
+                exclusionList = ExclusionList.fromFile(excludeFile);
+                System.out.println("Loaded " + exclusionList.size() + " exclusion pattern(s)");
+                System.out.println("Exclude rate: " + excludeRate + "% of messages will match patterns");
+                System.out.println();
+            }
+
             switch (mode.toLowerCase()) {
                 case "publish":
                     return runPublishTest();
@@ -123,6 +157,10 @@ public class PerfTestCommand implements Callable<Integer> {
         System.out.println("  Warmup:         " + df.format(warmupCount) + " messages");
         System.out.println("  Host:           " + connection.host);
         System.out.println("  Queue:          " + connection.queue);
+        if (excludeFile != null) {
+            System.out.println("  Exclusion:      " + excludeFile.getName() + " (" + excludeRate + "% match rate)");
+            System.out.println("  Check content:  " + excludeByContent);
+        }
         System.out.println();
     }
 
@@ -232,9 +270,24 @@ public class PerfTestCommand implements Callable<Integer> {
 
         testStartTime = System.nanoTime();
 
+        final ExclusionList finalExclusionList = exclusionList;
+        final boolean checkContent = excludeByContent;
+
         FlowReceiver flowReceiver = session.createFlow(new XMLMessageListener() {
             @Override
             public void onReceive(BytesXMLMessage message) {
+                // Perform exclusion check if enabled
+                if (finalExclusionList != null) {
+                    long checkStart = System.nanoTime();
+                    boolean excluded = shouldExcludeMessage(finalExclusionList, message, checkContent);
+                    totalExclusionCheckTime.addAndGet(System.nanoTime() - checkStart);
+
+                    if (excluded) {
+                        excludedCount.incrementAndGet();
+                        return;
+                    }
+                }
+
                 int count = receivedCount.incrementAndGet();
 
                 if (measureLatency && message.getCorrelationId() != null) {
@@ -301,9 +354,24 @@ public class PerfTestCommand implements Callable<Integer> {
         flowProps.setEndpoint(queue);
         flowProps.setAckMode(JCSMPProperties.SUPPORTED_MESSAGE_ACK_AUTO);
 
+        final ExclusionList finalExclusionList = exclusionList;
+        final boolean checkContent = excludeByContent;
+
         FlowReceiver flowReceiver = subSession.createFlow(new XMLMessageListener() {
             @Override
             public void onReceive(BytesXMLMessage message) {
+                // Perform exclusion check if enabled
+                if (finalExclusionList != null) {
+                    long checkStart = System.nanoTime();
+                    boolean excluded = shouldExcludeMessage(finalExclusionList, message, checkContent);
+                    totalExclusionCheckTime.addAndGet(System.nanoTime() - checkStart);
+
+                    if (excluded) {
+                        excludedCount.incrementAndGet();
+                        return;
+                    }
+                }
+
                 int count = receivedCount.incrementAndGet();
 
                 if (measureLatency && message.getCorrelationId() != null) {
@@ -375,6 +443,9 @@ public class PerfTestCommand implements Callable<Integer> {
         long intervalNanos = targetRate > 0 ? 1_000_000_000L / targetRate : 0;
         long nextSendTime = System.nanoTime();
 
+        // Random for generating excludable messages
+        Random random = new Random();
+
         for (int i = 0; i < messageCount && running; i++) {
             if (intervalNanos > 0) {
                 while (System.nanoTime() < nextSendTime) {
@@ -384,9 +455,19 @@ public class PerfTestCommand implements Callable<Integer> {
             }
 
             TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
-            msg.setText(payload);
+
+            // Generate payload that may be excluded based on excludeRate
+            String msgPayload = payload;
+            String correlationId = String.valueOf(System.nanoTime());
+            if (exclusionList != null && random.nextInt(100) < excludeRate) {
+                // Make this message excludable by adding marker
+                msgPayload = EXCLUDE_MARKER + payload;
+                correlationId = EXCLUDE_MARKER + correlationId;
+            }
+
+            msg.setText(msgPayload);
             msg.setDeliveryMode(delMode);
-            msg.setCorrelationId(String.valueOf(System.nanoTime()));
+            msg.setCorrelationId(correlationId);
 
             producer.send(msg, queue);
             sentCount.incrementAndGet();
@@ -515,9 +596,17 @@ public class PerfTestCommand implements Callable<Integer> {
 
         System.out.println();
         System.out.println("Messages received: " + df.format(receivedCount.get()));
+        if (excludedCount.get() > 0) {
+            System.out.println("Messages excluded: " + df.format(excludedCount.get()));
+        }
         System.out.println("Errors:            " + df.format(errorCount.get()));
         System.out.println("Duration:          " + df.format(durationSeconds) + " seconds");
         System.out.println("Throughput:        " + df.format(throughput) + " msg/s");
+
+        // Print exclusion statistics if exclusion was tested
+        if (exclusionList != null) {
+            printExclusionStats();
+        }
 
         if (!latencies.isEmpty()) {
             printLatencyStats();
@@ -541,11 +630,19 @@ public class PerfTestCommand implements Callable<Integer> {
         System.out.println();
         System.out.println("Messages sent:     " + df.format(sentCount.get()));
         System.out.println("Messages received: " + df.format(receivedCount.get()));
+        if (excludedCount.get() > 0) {
+            System.out.println("Messages excluded: " + df.format(excludedCount.get()));
+        }
         System.out.println("Errors:            " + df.format(errorCount.get()));
         System.out.println("Duration:          " + df.format(durationSeconds) + " seconds");
         System.out.println("Publish rate:      " + df.format(pubThroughput) + " msg/s");
         System.out.println("Consume rate:      " + df.format(subThroughput) + " msg/s");
         System.out.println("Data throughput:   " + df.format(dataThroughputMB) + " MB/s");
+
+        // Print exclusion statistics if exclusion was tested
+        if (exclusionList != null) {
+            printExclusionStats();
+        }
 
         if (!latencies.isEmpty()) {
             printLatencyStats();
@@ -582,6 +679,58 @@ public class PerfTestCommand implements Callable<Integer> {
         System.out.println("  Median:  " + df.format(median / 1000.0) + " μs");
         System.out.println("  P95:     " + df.format(p95 / 1000.0) + " μs");
         System.out.println("  P99:     " + df.format(p99 / 1000.0) + " μs");
+    }
+
+    private void printExclusionStats() {
+        System.out.println();
+        System.out.println("Exclusion Statistics:");
+
+        int totalChecked = receivedCount.get() + excludedCount.get();
+        double excludePercent = totalChecked > 0 ? (excludedCount.get() * 100.0 / totalChecked) : 0;
+        double avgCheckTimeUs = totalChecked > 0 ? (totalExclusionCheckTime.get() / (double) totalChecked) / 1000.0 : 0;
+
+        System.out.println("  Total checked:   " + df.format(totalChecked));
+        System.out.println("  Excluded:        " + df.format(excludedCount.get()) + " (" + df.format(excludePercent) + "%)");
+        System.out.println("  Avg check time:  " + df.format(avgCheckTimeUs) + " μs/msg");
+        System.out.println("  Total overhead:  " + df.format(totalExclusionCheckTime.get() / 1_000_000.0) + " ms");
+    }
+
+    /**
+     * Check if a message should be excluded based on correlation ID and optionally content.
+     */
+    private static boolean shouldExcludeMessage(ExclusionList list, BytesXMLMessage message, boolean checkContent) {
+        if (list == null || list.isEmpty()) {
+            return false;
+        }
+
+        // Check correlation ID
+        String correlationId = message.getCorrelationId();
+        if (correlationId != null && list.isExcluded(correlationId)) {
+            return true;
+        }
+
+        // Check content if enabled
+        if (checkContent) {
+            String content = extractContent(message);
+            if (content != null && list.containsExcluded(content)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Extract text content from a message.
+     */
+    private static String extractContent(BytesXMLMessage message) {
+        if (message instanceof TextMessage) {
+            return ((TextMessage) message).getText();
+        } else if (message instanceof BytesMessage) {
+            byte[] data = ((BytesMessage) message).getData();
+            return data != null ? new String(data) : null;
+        }
+        return null;
     }
 
     /**
