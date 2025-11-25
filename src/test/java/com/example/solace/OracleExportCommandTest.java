@@ -9,6 +9,8 @@ import picocli.CommandLine;
 import java.io.File;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 
 import static org.junit.Assert.*;
 
@@ -37,6 +39,7 @@ public class OracleExportCommandTest {
         String output = sw.toString();
         assertTrue(output.contains("oracle-export"));
         assertTrue(output.contains("--sql"));
+        assertTrue(output.contains("--sql-file"));
         assertTrue(output.contains("--output-folder"));
         assertTrue(output.contains("--message-column"));
         assertTrue(output.contains("--filename-column"));
@@ -173,5 +176,84 @@ public class OracleExportCommandTest {
         String output = sw.toString();
         assertTrue("oracle-export command should be listed", output.contains("oracle-export"));
         assertTrue("ora-export alias should be mentioned", output.contains("ora-export") || output.contains("ora-exp"));
+    }
+
+    @Test
+    public void testSqlFileOption() throws Exception {
+        // Create a SQL file with multiline query
+        File sqlFile = tempFolder.newFile("query.sql");
+        String multilineSql = "SELECT \n" +
+            "    id,\n" +
+            "    message_content,\n" +
+            "    created_at\n" +
+            "FROM outbound_messages\n" +
+            "WHERE status = 'PENDING'\n" +
+            "ORDER BY created_at";
+        Files.write(sqlFile.toPath(), multilineSql.getBytes(StandardCharsets.UTF_8));
+
+        // Test parsing with --sql-file
+        OracleExportCommand command = new OracleExportCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "--db-host", "localhost",
+            "--db-service", "ORCL",
+            "--db-user", "user",
+            "--db-password", "pass",
+            "--sql-file", sqlFile.getAbsolutePath(),
+            "-o", tempFolder.getRoot().getAbsolutePath()
+        );
+
+        assertNotNull(command.sqlFile);
+        assertEquals(sqlFile.getAbsolutePath(), command.sqlFile.getAbsolutePath());
+        assertNull(command.sqlQuery);
+    }
+
+    @Test
+    public void testSqlFileWithShortOption() throws Exception {
+        // Create a SQL file
+        File sqlFile = tempFolder.newFile("test.sql");
+        Files.write(sqlFile.toPath(), "SELECT 1 FROM DUAL".getBytes(StandardCharsets.UTF_8));
+
+        // Test parsing with -f (short option)
+        OracleExportCommand command = new OracleExportCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "--db-host", "localhost",
+            "--db-service", "ORCL",
+            "--db-user", "user",
+            "--db-password", "pass",
+            "-f", sqlFile.getAbsolutePath(),
+            "-o", tempFolder.getRoot().getAbsolutePath()
+        );
+
+        assertNotNull(command.sqlFile);
+    }
+
+    @Test
+    public void testCannotUseBothSqlAndSqlFile() throws Exception {
+        // Create a SQL file
+        File sqlFile = tempFolder.newFile("query.sql");
+        Files.write(sqlFile.toPath(), "SELECT 1 FROM DUAL".getBytes(StandardCharsets.UTF_8));
+
+        // Parse with both --sql and --sql-file (should parse but fail at runtime)
+        OracleExportCommand command = new OracleExportCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "--db-host", "localhost",
+            "--db-service", "ORCL",
+            "--db-user", "user",
+            "--db-password", "pass",
+            "--sql", "SELECT 1",
+            "--sql-file", sqlFile.getAbsolutePath(),
+            "-o", tempFolder.getRoot().getAbsolutePath()
+        );
+
+        // Both should be set after parsing
+        assertNotNull(command.sqlQuery);
+        assertNotNull(command.sqlFile);
+        // The error would be caught at runtime in resolveSqlQuery()
     }
 }

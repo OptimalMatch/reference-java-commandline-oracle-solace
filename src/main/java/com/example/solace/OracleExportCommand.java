@@ -9,6 +9,7 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -27,9 +28,12 @@ public class OracleExportCommand implements Callable<Integer> {
     OracleOptions oracleConnection;
 
     @Option(names = {"--sql", "-s"},
-            description = "SQL SELECT statement to execute",
-            required = true)
+            description = "SQL SELECT statement to execute (use --sql-file for multiline queries)")
     String sqlQuery;
+
+    @Option(names = {"--sql-file", "-f"},
+            description = "File containing SQL SELECT statement (supports multiline queries)")
+    File sqlFile;
 
     @Option(names = {"--message-column", "-m"},
             description = "Column name containing the message content (default: first column)",
@@ -68,6 +72,12 @@ public class OracleExportCommand implements Callable<Integer> {
         Connection dbConnection = null;
 
         try {
+            // Resolve SQL query from --sql or --sql-file
+            String effectiveSql = resolveSqlQuery();
+            if (effectiveSql == null) {
+                return 1;
+            }
+
             // Validate and create output folder
             if (!dryRun) {
                 if (!outputFolder.exists()) {
@@ -98,9 +108,9 @@ public class OracleExportCommand implements Callable<Integer> {
             System.out.println("Connected to Oracle successfully");
 
             // Execute query
-            System.out.println("Executing query: " + sqlQuery);
+            System.out.println("Executing query: " + formatQueryForDisplay(effectiveSql));
             Statement stmt = dbConnection.createStatement();
-            ResultSet rs = stmt.executeQuery(sqlQuery);
+            ResultSet rs = stmt.executeQuery(effectiveSql);
 
             // Get column metadata
             int messageColIndex = 1;
@@ -224,5 +234,59 @@ public class OracleExportCommand implements Callable<Integer> {
         if (s == null) return "null";
         if (s.length() <= maxLen) return s;
         return s.substring(0, maxLen) + "...";
+    }
+
+    /**
+     * Resolve SQL query from either --sql option or --sql-file option.
+     * Returns null if neither is provided or if there's an error reading the file.
+     */
+    private String resolveSqlQuery() {
+        if (sqlQuery != null && !sqlQuery.isEmpty() && sqlFile != null) {
+            System.err.println("Error: Cannot specify both --sql and --sql-file. Use one or the other.");
+            return null;
+        }
+
+        if (sqlFile != null) {
+            if (!sqlFile.exists()) {
+                System.err.println("Error: SQL file not found: " + sqlFile.getAbsolutePath());
+                return null;
+            }
+            if (!sqlFile.isFile()) {
+                System.err.println("Error: SQL file path is not a file: " + sqlFile.getAbsolutePath());
+                return null;
+            }
+            try {
+                String content = new String(Files.readAllBytes(sqlFile.toPath()), StandardCharsets.UTF_8);
+                if (content.trim().isEmpty()) {
+                    System.err.println("Error: SQL file is empty: " + sqlFile.getAbsolutePath());
+                    return null;
+                }
+                System.out.println("Loaded SQL from file: " + sqlFile.getAbsolutePath());
+                return content.trim();
+            } catch (Exception e) {
+                System.err.println("Error reading SQL file: " + e.getMessage());
+                return null;
+            }
+        }
+
+        if (sqlQuery == null || sqlQuery.isEmpty()) {
+            System.err.println("Error: Must specify either --sql or --sql-file option.");
+            return null;
+        }
+
+        return sqlQuery;
+    }
+
+    /**
+     * Format query for display - truncate long queries and handle multiline.
+     */
+    private String formatQueryForDisplay(String sql) {
+        if (sql == null) return "null";
+        // Replace newlines with spaces for single-line display
+        String oneLine = sql.replaceAll("\\s+", " ").trim();
+        if (oneLine.length() > 100) {
+            return oneLine.substring(0, 100) + "...";
+        }
+        return oneLine;
     }
 }

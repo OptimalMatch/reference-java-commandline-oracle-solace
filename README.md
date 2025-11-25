@@ -583,10 +583,45 @@ java -jar target/solace-cli-1.0.0.jar ora-pub \
 
 | Option | Description |
 |--------|-------------|
-| `--sql` | SQL SELECT query to execute (required) |
+| `--sql, -s` | SQL SELECT query to execute (use `--sql` or `--sql-file`) |
+| `--sql-file, -f` | File containing SQL query (supports multiline queries) |
 | `--message-column` | Column name containing message content (default: first column) |
 | `--correlation-column` | Column name for correlation ID (optional) |
 | `--dry-run` | Preview messages without publishing |
+
+### Using SQL Files for Complex Queries
+
+For complex, multiline SQL queries, use `--sql-file` instead of `--sql`:
+
+```sql
+-- query.sql
+SELECT
+    message_id,
+    message_content,
+    correlation_id,
+    created_timestamp
+FROM outbound_messages
+WHERE status = 'PENDING'
+    AND created_timestamp > SYSDATE - 1
+    AND message_type IN ('ORDER', 'INVOICE')
+ORDER BY created_timestamp
+```
+
+```bash
+java -jar target/solace-cli-1.0.0.jar oracle-publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql-file query.sql \
+  --message-column message_content \
+  --correlation-column message_id
+```
 
 ---
 
@@ -654,7 +689,8 @@ java -jar target/solace-cli-1.0.0.jar oracle-export \
 
 | Option | Description |
 |--------|-------------|
-| `--sql, -s` | SQL SELECT query to execute (required) |
+| `--sql, -s` | SQL SELECT query to execute (use `--sql` or `--sql-file`) |
+| `--sql-file, -f` | File containing SQL query (supports multiline queries) |
 | `--output-folder, -o` | Output folder for exported files (required) |
 | `--message-column, -m` | Column name containing the content (default: first column) |
 | `--filename-column` | Column name to use as filename (default: sequential numbering) |
@@ -662,6 +698,37 @@ java -jar target/solace-cli-1.0.0.jar oracle-export \
 | `--prefix` | Prefix for generated filenames (default: `message_`) |
 | `--overwrite` | Overwrite existing files (default: skip) |
 | `--dry-run` | Preview without writing files |
+
+### Oracle Export with SQL File
+
+For complex export queries, use `--sql-file`:
+
+```sql
+-- export_query.sql
+SELECT
+    payload,
+    order_id,
+    customer_name
+FROM orders
+WHERE status = 'COMPLETED'
+    AND export_date IS NULL
+    AND total_amount > 1000
+ORDER BY order_date DESC
+FETCH FIRST 500 ROWS ONLY
+```
+
+```bash
+java -jar target/solace-cli-1.0.0.jar oracle-export \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql-file export_query.sql \
+  --message-column payload \
+  --filename-column order_id \
+  --output-folder /data/export \
+  --extension .xml
+```
 
 ### Two-Step Workflow Example
 
