@@ -190,6 +190,8 @@ public class PerfTestCommand implements Callable<Integer> {
 
         // Generate test payload
         String payload = generatePayload(messageSize);
+        String excludePayload = EXCLUDE_MARKER + payload;
+        Random random = new Random();
 
         // Warmup phase
         if (warmupCount > 0) {
@@ -225,11 +227,17 @@ public class PerfTestCommand implements Callable<Integer> {
 
             long sendStart = System.nanoTime();
             TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
-            msg.setText(payload);
+
+            // Add exclusion marker based on excludeRate
+            boolean shouldMark = exclusionList != null && random.nextInt(100) < excludeRate;
+            String msgPayload = shouldMark ? excludePayload : payload;
+            msg.setText(msgPayload);
             msg.setDeliveryMode(delMode);
 
             if (measureLatency) {
                 msg.setCorrelationId(String.valueOf(sendStart));
+            } else if (shouldMark) {
+                msg.setCorrelationId(EXCLUDE_MARKER + i);
             }
 
             producer.send(msg, queue);
@@ -283,7 +291,13 @@ public class PerfTestCommand implements Callable<Integer> {
                     totalExclusionCheckTime.addAndGet(System.nanoTime() - checkStart);
 
                     if (excluded) {
-                        excludedCount.incrementAndGet();
+                        int excl = excludedCount.incrementAndGet();
+                        // Check if we've processed all messages (received + excluded)
+                        if (receivedCount.get() + excl >= messageCount) {
+                            testEndTime = System.nanoTime();
+                            running = false;
+                            completionLatch.countDown();
+                        }
                         return;
                     }
                 }
@@ -300,7 +314,8 @@ public class PerfTestCommand implements Callable<Integer> {
                     }
                 }
 
-                if (count >= messageCount) {
+                // Check if we've processed all messages (received + excluded)
+                if (count + excludedCount.get() >= messageCount) {
                     testEndTime = System.nanoTime();
                     running = false;
                     completionLatch.countDown();
@@ -367,7 +382,13 @@ public class PerfTestCommand implements Callable<Integer> {
                     totalExclusionCheckTime.addAndGet(System.nanoTime() - checkStart);
 
                     if (excluded) {
-                        excludedCount.incrementAndGet();
+                        int excl = excludedCount.incrementAndGet();
+                        // Check if we've processed all messages (received + excluded)
+                        if (receivedCount.get() + excl >= messageCount) {
+                            testEndTime = System.nanoTime();
+                            running = false;
+                            completionLatch.countDown();
+                        }
                         return;
                     }
                 }
@@ -384,7 +405,8 @@ public class PerfTestCommand implements Callable<Integer> {
                     }
                 }
 
-                if (count >= messageCount) {
+                // Check if we've processed all messages (received + excluded)
+                if (count + excludedCount.get() >= messageCount) {
                     testEndTime = System.nanoTime();
                     running = false;
                     completionLatch.countDown();
