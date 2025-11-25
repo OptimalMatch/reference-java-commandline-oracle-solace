@@ -10,6 +10,7 @@ graph TB
         CLI[SolaceCli<br/>Main Entry Point]
         PUB[PublishCommand]
         CON[ConsumeCommand]
+        COPY[CopyQueueCommand]
         ORA[OraclePublishCommand]
         EXP[OracleExportCommand]
         INS[OracleInsertCommand]
@@ -17,6 +18,7 @@ graph TB
 
         CLI --> PUB
         CLI --> CON
+        CLI --> COPY
         CLI --> ORA
         CLI --> EXP
         CLI --> INS
@@ -49,6 +51,8 @@ graph TB
     ORA --> QUEUE
     DIR --> QUEUE
     QUEUE --> CON
+    QUEUE --> COPY
+    COPY --> QUEUE
 ```
 
 ## Message Flow Diagrams
@@ -289,12 +293,17 @@ classDiagram
         +call() Integer
     }
 
+    class CopyQueueCommand {
+        +call() Integer
+    }
+
     class SolaceConnection {
         +connect() JCSMPSession
     }
 
     SolaceCli --> PublishCommand
     SolaceCli --> ConsumeCommand
+    SolaceCli --> CopyQueueCommand
     SolaceCli --> OraclePublishCommand
     SolaceCli --> OracleExportCommand
     SolaceCli --> OracleInsertCommand
@@ -302,6 +311,7 @@ classDiagram
 
     PublishCommand --> ConnectionOptions
     ConsumeCommand --> ConnectionOptions
+    CopyQueueCommand --> ConnectionOptions
     OraclePublishCommand --> ConnectionOptions
     OraclePublishCommand --> OracleOptions
     OracleExportCommand --> OracleOptions
@@ -310,6 +320,7 @@ classDiagram
 
     PublishCommand --> SolaceConnection
     ConsumeCommand --> SolaceConnection
+    CopyQueueCommand --> SolaceConnection
     OraclePublishCommand --> SolaceConnection
     FolderPublishCommand --> SolaceConnection
 ```
@@ -395,6 +406,7 @@ mvn clean package
 | `oracle-export` | `ora-export`, `ora-exp` | Export Oracle query results to files in a folder |
 | `oracle-insert` | `ora-insert`, `ora-ins` | Insert file contents from a folder into Oracle database |
 | `folder-publish` | `folder-pub`, `dir-pub` | Publish messages from files in a folder |
+| `copy-queue` | `copy`, `cp` | Copy or move messages between queues |
 | `perf-test` | `perf`, `benchmark` | Run performance and load tests against Solace |
 
 ## Usage
@@ -477,6 +489,33 @@ java -jar target/solace-cli-1.0.0.jar publish \
 | `--correlation-id` | Set correlation ID |
 | `--delivery-mode` | PERSISTENT (default) or DIRECT |
 | `--ttl` | Time to live in milliseconds |
+| `-Q, --second-queue` | Also publish to this second queue (fan-out) |
+
+### Fan-Out Publishing (Second Queue)
+
+Send the same message to multiple queues simultaneously:
+
+```bash
+# Publish to primary queue and a backup queue
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q orders.primary \
+  -Q orders.backup \
+  "Order data"
+
+# Fan-out to audit queue while publishing to main queue
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q transactions.processing \
+  --second-queue transactions.audit \
+  -f transaction.json
+```
 
 ---
 
@@ -656,6 +695,7 @@ java -jar target/solace-cli-1.0.0.jar ora-pub \
 | `--sql-file, -f` | File containing SQL query (supports multiline queries) |
 | `--message-column` | Column name containing message content (default: first column) |
 | `--correlation-column` | Column name for correlation ID (optional) |
+| `-Q, --second-queue` | Also publish to this second queue (fan-out) |
 | `--dry-run` | Preview messages without publishing |
 
 ### Using SQL Files for Complex Queries
@@ -996,7 +1036,88 @@ java -jar target/solace-cli-1.0.0.jar dir-pub \
 | `--recursive` | Recursively scan subdirectories |
 | `--use-filename-as-correlation` | Use filename (without extension) as correlation ID |
 | `--sort` | Sort order: `name`, `date`, or `size` (default: none) |
+| `-Q, --second-queue` | Also publish to this second queue (fan-out) |
 | `--dry-run` | Preview files without publishing |
+
+---
+
+## Copy Queue (Queue-to-Queue)
+
+Copy or move messages from one queue to another. Useful for migrating messages, creating backups, or reprocessing from dead letter queues.
+
+```bash
+# Copy messages from one queue to another (non-destructive)
+java -jar target/solace-cli-1.0.0.jar copy-queue \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q source-queue \
+  --dest destination-queue
+
+# Move messages (removes from source after copying)
+java -jar target/solace-cli-1.0.0.jar copy-queue \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q dead-letter-queue \
+  --dest reprocess-queue \
+  --move
+
+# Copy first 100 messages only
+java -jar target/solace-cli-1.0.0.jar cp \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q source-queue \
+  -d backup-queue \
+  -c 100
+
+# Copy with preserved message properties
+java -jar target/solace-cli-1.0.0.jar copy \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q source-queue \
+  --dest archive-queue \
+  --preserve-properties
+
+# Dry run - preview without copying
+java -jar target/solace-cli-1.0.0.jar copy-queue \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q source-queue \
+  --dest destination-queue \
+  --dry-run
+
+# Reprocess DLQ messages with DIRECT delivery mode
+java -jar target/solace-cli-1.0.0.jar copy-queue \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q orders.dlq \
+  --dest orders.retry \
+  --move \
+  --delivery-mode DIRECT
+```
+
+### Copy Queue Options
+
+| Option | Description |
+|--------|-------------|
+| `-d, --dest` | Destination queue name (required) |
+| `-c, --count` | Maximum messages to copy (0 = all available) |
+| `-t, --timeout` | Timeout in seconds waiting for messages (default: 5) |
+| `--move` | Move messages (acknowledge after copy) instead of browse |
+| `--preserve-properties` | Preserve correlation ID, TTL, and other properties |
+| `--delivery-mode` | Override delivery mode: PERSISTENT or DIRECT |
+| `--dry-run` | Preview messages without copying |
 
 ---
 

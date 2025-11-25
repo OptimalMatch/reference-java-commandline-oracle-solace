@@ -59,6 +59,10 @@ public class OraclePublishCommand implements Callable<Integer> {
             description = "Query database but don't publish messages")
     boolean dryRun;
 
+    @Option(names = {"--second-queue", "-Q"},
+            description = "Also publish to this second queue (fan-out)")
+    String secondQueue;
+
     // Example query for reference
     private static final String EXAMPLE_QUERY =
         "SELECT message_id, message_content, correlation_id FROM outbound_messages WHERE status = 'PENDING'";
@@ -123,6 +127,7 @@ public class OraclePublishCommand implements Callable<Integer> {
             }
 
             Queue queue = JCSMPFactory.onlyInstance().createQueue(solaceConnection.queue);
+            Queue queue2 = (secondQueue != null) ? JCSMPFactory.onlyInstance().createQueue(secondQueue) : null;
             DeliveryMode mode = "DIRECT".equalsIgnoreCase(deliveryMode)
                 ? DeliveryMode.DIRECT
                 : DeliveryMode.PERSISTENT;
@@ -155,6 +160,11 @@ public class OraclePublishCommand implements Callable<Integer> {
 
                     producer.send(msg, queue);
                     System.out.println("Published message " + messageCount + " to queue '" + solaceConnection.queue + "'");
+
+                    if (queue2 != null) {
+                        producer.send(msg, queue2);
+                        System.out.println("Published message " + messageCount + " to queue '" + secondQueue + "'");
+                    }
                 }
             }
 
@@ -164,7 +174,9 @@ public class OraclePublishCommand implements Callable<Integer> {
             if (dryRun) {
                 System.out.println("\nDry run complete. Found " + messageCount + " message(s) to publish.");
             } else {
-                System.out.println("\nSuccessfully published " + messageCount + " message(s) from Oracle to Solace");
+                int totalMessages = (queue2 != null) ? messageCount * 2 : messageCount;
+                String queueInfo = (queue2 != null) ? " to 2 queues" : "";
+                System.out.println("\nSuccessfully published " + totalMessages + " message(s) from Oracle to Solace" + queueInfo);
             }
 
             return 0;

@@ -73,6 +73,9 @@ public class OracleInsertCommand implements Callable<Integer> {
             description = "Preview files without inserting")
     boolean dryRun;
 
+    // Internal flag to track if custom SQL file used ?? for filename
+    private boolean sqlFileHasFilenamePlaceholder = false;
+
     @Override
     public Integer call() {
         Connection dbConnection = null;
@@ -143,14 +146,9 @@ public class OracleInsertCommand implements Callable<Integer> {
                     // Set parameters
                     int paramIndex = 1;
                     pstmt.setString(paramIndex++, content);
-                    if (filenameColumn != null || (sqlFile != null && insertSql.contains("??"))) {
+                    if (filenameColumn != null || sqlFileHasFilenamePlaceholder) {
                         // If using custom SQL with ??, we need to set filename
-                        if (sqlFile != null && insertSql.contains("??")) {
-                            // The ?? was replaced with ? during resolution
-                            pstmt.setString(paramIndex++, filename);
-                        } else if (filenameColumn != null) {
-                            pstmt.setString(paramIndex++, filename);
-                        }
+                        pstmt.setString(paramIndex++, filename);
                     }
 
                     pstmt.executeUpdate();
@@ -227,7 +225,8 @@ public class OracleInsertCommand implements Callable<Integer> {
                     System.err.println("Error: SQL file is empty: " + sqlFile.getAbsolutePath());
                     return null;
                 }
-                // Replace ?? with ? for filename placeholder
+                // Track if ?? placeholder exists for filename, then replace with ?
+                sqlFileHasFilenamePlaceholder = content.contains("??");
                 String sql = content.trim().replace("??", "?");
                 System.out.println("Loaded SQL from file: " + sqlFile.getAbsolutePath());
                 return sql;

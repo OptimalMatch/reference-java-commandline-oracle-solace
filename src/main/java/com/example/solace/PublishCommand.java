@@ -50,6 +50,10 @@ public class PublishCommand implements Callable<Integer> {
             defaultValue = "0")
     long ttl;
 
+    @Option(names = {"--second-queue", "-Q"},
+            description = "Also publish to this second queue (fan-out)")
+    String secondQueue;
+
     @Override
     public Integer call() {
         JCSMPSession session = null;
@@ -67,6 +71,7 @@ public class PublishCommand implements Callable<Integer> {
             System.out.println("Connected successfully");
 
             Queue queue = JCSMPFactory.onlyInstance().createQueue(connection.queue);
+            Queue queue2 = (secondQueue != null) ? JCSMPFactory.onlyInstance().createQueue(secondQueue) : null;
 
             producer = session.getMessageProducer(new JCSMPStreamingPublishCorrelatingEventHandler() {
                 @Override
@@ -80,8 +85,8 @@ public class PublishCommand implements Callable<Integer> {
                 }
             });
 
-            DeliveryMode mode = "DIRECT".equalsIgnoreCase(deliveryMode) 
-                ? DeliveryMode.DIRECT 
+            DeliveryMode mode = "DIRECT".equalsIgnoreCase(deliveryMode)
+                ? DeliveryMode.DIRECT
                 : DeliveryMode.PERSISTENT;
 
             for (int i = 0; i < count; i++) {
@@ -101,9 +106,16 @@ public class PublishCommand implements Callable<Integer> {
 
                 String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
                 System.out.println("Published message to queue '" + connection.queue + "'" + msgId);
+
+                if (queue2 != null) {
+                    producer.send(msg, queue2);
+                    System.out.println("Published message to queue '" + secondQueue + "'" + msgId);
+                }
             }
 
-            System.out.println("Successfully published " + count + " message(s)");
+            int totalMessages = (queue2 != null) ? count * 2 : count;
+            String queueInfo = (queue2 != null) ? " to 2 queues" : "";
+            System.out.println("Successfully published " + totalMessages + " message(s)" + queueInfo);
             return 0;
 
         } catch (Exception e) {

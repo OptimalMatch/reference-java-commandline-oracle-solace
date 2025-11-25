@@ -179,4 +179,50 @@ public class OraclePublishCommandTest {
         assertTrue("oracle-publish command should be listed", output.contains("oracle-publish"));
         assertTrue("ora-pub alias should be mentioned", output.contains("ora-pub"));
     }
+
+    @Test
+    public void testSecondQueueOption() {
+        OraclePublishCommand command = new OraclePublishCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "--db-host", "localhost",
+            "--db-service", "ORCL",
+            "--db-user", "user",
+            "--db-password", "pass",
+            "-H", "tcp://localhost:55555",
+            "-v", "default",
+            "-u", "solaceuser",
+            "-p", "solacepass",
+            "-q", "primary-queue",
+            "--sql", "SELECT 1",
+            "--second-queue", "secondary-queue"
+        );
+
+        assertEquals("primary-queue", command.solaceConnection.queue);
+        assertEquals("secondary-queue", command.secondQueue);
+    }
+
+    @Test
+    public void testSecondQueueShortOption() {
+        OraclePublishCommand command = new OraclePublishCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "--db-host", "localhost",
+            "--db-service", "ORCL",
+            "--db-user", "user",
+            "--db-password", "pass",
+            "-H", "tcp://localhost:55555",
+            "-v", "default",
+            "-u", "solaceuser",
+            "-p", "solacepass",
+            "-q", "primary-queue",
+            "--sql", "SELECT 1",
+            "-Q", "backup-queue"
+        );
+
+        assertEquals("primary-queue", command.solaceConnection.queue);
+        assertEquals("backup-queue", command.secondQueue);
+    }
 }
