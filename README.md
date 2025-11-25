@@ -11,11 +11,13 @@ graph TB
         PUB[PublishCommand]
         CON[ConsumeCommand]
         ORA[OraclePublishCommand]
+        EXP[OracleExportCommand]
         DIR[FolderPublishCommand]
 
         CLI --> PUB
         CLI --> CON
         CLI --> ORA
+        CLI --> EXP
         CLI --> DIR
     end
 
@@ -35,6 +37,8 @@ graph TB
     FILE --> PUB
     FOLDER --> DIR
     DB --> ORA
+    DB --> EXP
+    EXP --> FOLDER
 
     PUB --> QUEUE
     ORA --> QUEUE
@@ -91,6 +95,33 @@ sequenceDiagram
     CLI-->>User: Published N messages
 ```
 
+### Oracle Export Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as Solace CLI
+    participant Oracle as Oracle DB
+    participant FS as File System
+
+    User->>CLI: oracle-export --sql "SELECT..." -o /folder
+    CLI->>CLI: Parse arguments
+    CLI->>FS: Create output folder (if needed)
+    CLI->>Oracle: Connect via JDBC
+    Oracle-->>CLI: Connection established
+    CLI->>Oracle: Execute SQL query
+    Oracle-->>CLI: ResultSet (N rows)
+
+    loop For each row
+        CLI->>CLI: Extract content & filename
+        CLI->>CLI: Sanitize filename
+        CLI->>FS: Write file
+    end
+
+    CLI->>Oracle: Close connection
+    CLI-->>User: Exported N files
+```
+
 ### Folder Publish Flow
 
 ```mermaid
@@ -118,6 +149,30 @@ sequenceDiagram
 
     CLI->>Solace: Disconnect
     CLI-->>User: Published N messages
+```
+
+### Two-Step Workflow: Export then Publish
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as Solace CLI
+    participant Oracle as Oracle DB
+    participant FS as File System
+    participant Solace as Solace Broker
+
+    Note over User,Solace: Step 1: Export from Oracle to Files
+    User->>CLI: oracle-export --sql "SELECT..." -o /folder
+    CLI->>Oracle: Query database
+    Oracle-->>CLI: ResultSet
+    CLI->>FS: Write files to folder
+
+    Note over User,Solace: Step 2: Publish files to Solace
+    User->>CLI: folder-publish --folder /folder
+    CLI->>FS: Read files
+    CLI->>Solace: Publish messages
+    Solace-->>CLI: Acknowledge
+    CLI-->>User: Complete
 ```
 
 ### Consume Command Flow
@@ -187,6 +242,10 @@ classDiagram
         +call() Integer
     }
 
+    class OracleExportCommand {
+        +call() Integer
+    }
+
     class FolderPublishCommand {
         +call() Integer
     }
@@ -198,12 +257,14 @@ classDiagram
     SolaceCli --> PublishCommand
     SolaceCli --> ConsumeCommand
     SolaceCli --> OraclePublishCommand
+    SolaceCli --> OracleExportCommand
     SolaceCli --> FolderPublishCommand
 
     PublishCommand --> ConnectionOptions
     ConsumeCommand --> ConnectionOptions
     OraclePublishCommand --> ConnectionOptions
     OraclePublishCommand --> OracleOptions
+    OracleExportCommand --> OracleOptions
     FolderPublishCommand --> ConnectionOptions
 
     PublishCommand --> SolaceConnection
@@ -249,7 +310,9 @@ graph LR
 - **Consume** messages with auto/manual acknowledgment
 - **Browse** queue messages non-destructively
 - **Oracle Integration** - Query Oracle database and publish result rows as messages
+- **Oracle Export** - Export Oracle query results to files for later publishing
 - **Folder Publishing** - Batch publish messages from files in a directory
+- **Two-Step Workflow** - Export from Oracle to files, then publish to Solace
 - Support for reading message content from stdin, file, or command line
 - Verbose output with message metadata
 - Write received messages to files
@@ -288,6 +351,7 @@ mvn clean package
 | `publish` | `pub`, `send` | Publish a single message to a Solace queue |
 | `consume` | `sub`, `receive` | Consume messages from a Solace queue |
 | `oracle-publish` | `ora-pub` | Query Oracle database and publish results as messages |
+| `oracle-export` | `ora-export`, `ora-exp` | Export Oracle query results to files in a folder |
 | `folder-publish` | `folder-pub`, `dir-pub` | Publish messages from files in a folder |
 
 ## Usage
@@ -523,6 +587,108 @@ java -jar target/solace-cli-1.0.0.jar ora-pub \
 | `--message-column` | Column name containing message content (default: first column) |
 | `--correlation-column` | Column name for correlation ID (optional) |
 | `--dry-run` | Preview messages without publishing |
+
+---
+
+## Oracle Export to Files
+
+Export Oracle query results to files in a folder. Each row becomes one file. This enables a two-step workflow: first export from Oracle to files, then publish those files to Solace using `folder-publish`.
+
+```bash
+# Basic usage - export query results to files
+java -jar target/solace-cli-1.0.0.jar oracle-export \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT message_content FROM outbound_messages WHERE status = 'PENDING'" \
+  --output-folder /data/export
+
+# Specify filename from a column
+java -jar target/solace-cli-1.0.0.jar oracle-export \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT payload, message_id FROM messages" \
+  --message-column payload \
+  --filename-column message_id \
+  --output-folder /data/export \
+  --extension .xml
+
+# Export with custom prefix and JSON extension
+java -jar target/solace-cli-1.0.0.jar ora-exp \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT json_data FROM orders WHERE exported = 0" \
+  --output-folder /data/orders \
+  --prefix order_ \
+  --extension .json
+
+# Dry run - preview without writing files
+java -jar target/solace-cli-1.0.0.jar oracle-export \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT * FROM messages FETCH FIRST 5 ROWS ONLY" \
+  --output-folder /data/export \
+  --dry-run
+
+# Overwrite existing files
+java -jar target/solace-cli-1.0.0.jar oracle-export \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT content, id FROM refresh_messages" \
+  --message-column content \
+  --filename-column id \
+  --output-folder /data/export \
+  --overwrite
+```
+
+### Oracle Export Options
+
+| Option | Description |
+|--------|-------------|
+| `--sql, -s` | SQL SELECT query to execute (required) |
+| `--output-folder, -o` | Output folder for exported files (required) |
+| `--message-column, -m` | Column name containing the content (default: first column) |
+| `--filename-column` | Column name to use as filename (default: sequential numbering) |
+| `--extension, -e` | File extension (default: `.txt`) |
+| `--prefix` | Prefix for generated filenames (default: `message_`) |
+| `--overwrite` | Overwrite existing files (default: skip) |
+| `--dry-run` | Preview without writing files |
+
+### Two-Step Workflow Example
+
+```bash
+# Step 1: Export from Oracle to files
+java -jar target/solace-cli-1.0.0.jar oracle-export \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT payload, order_id FROM pending_orders" \
+  --message-column payload \
+  --filename-column order_id \
+  --output-folder /data/staging \
+  --extension .xml
+
+# Step 2: Publish files to Solace
+java -jar target/solace-cli-1.0.0.jar folder-publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q orders.inbound \
+  --folder /data/staging \
+  --pattern "*.xml" \
+  --use-filename-as-correlation
+```
 
 ---
 
