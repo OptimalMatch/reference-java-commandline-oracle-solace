@@ -73,8 +73,17 @@ public class OracleInsertCommand implements Callable<Integer> {
             description = "Preview files without inserting")
     boolean dryRun;
 
+    @Option(names = {"--exclude-file"},
+            description = "File containing patterns to exclude (checks filename and optionally content)")
+    File excludeFile;
+
+    @Option(names = {"--exclude-content"},
+            description = "Also check file content against exclusion patterns")
+    boolean excludeByContent;
+
     // Internal flag to track if custom SQL file used ?? for filename
     private boolean sqlFileHasFilenamePlaceholder = false;
+    private ExclusionList exclusionList;
 
     @Override
     public Integer call() {
@@ -89,6 +98,16 @@ public class OracleInsertCommand implements Callable<Integer> {
             if (!sourceFolder.isDirectory()) {
                 System.err.println("Error: Source path is not a directory: " + sourceFolder.getAbsolutePath());
                 return 1;
+            }
+
+            // Load exclusion list if specified
+            if (excludeFile != null) {
+                if (!excludeFile.exists()) {
+                    System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    return 1;
+                }
+                exclusionList = ExclusionList.fromFile(excludeFile);
+                System.out.println("Loaded " + exclusionList.size() + " exclusion pattern(s) from " + excludeFile.getName());
             }
 
             // Validate table or SQL file
@@ -137,11 +156,27 @@ public class OracleInsertCommand implements Callable<Integer> {
 
             int insertCount = 0;
             int errorCount = 0;
+            int excludedCount = 0;
 
             for (File file : files) {
                 try {
-                    String content = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
                     String filename = getFilenameWithoutExtension(file.getName());
+
+                    // Check filename exclusion
+                    if (shouldExcludeFile(file.getName())) {
+                        excludedCount++;
+                        System.out.println("Excluded: " + file.getName() + " (filename match)");
+                        continue;
+                    }
+
+                    String content = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+
+                    // Check content exclusion
+                    if (excludeByContent && exclusionList != null && exclusionList.containsExcluded(content)) {
+                        excludedCount++;
+                        System.out.println("Excluded: " + file.getName() + " (content match)");
+                        continue;
+                    }
 
                     // Set parameters
                     int paramIndex = 1;
@@ -176,6 +211,9 @@ public class OracleInsertCommand implements Callable<Integer> {
             System.out.println();
             System.out.println("Insert complete:");
             System.out.println("  Records inserted: " + insertCount);
+            if (excludedCount > 0) {
+                System.out.println("  Records excluded: " + excludedCount);
+            }
             if (errorCount > 0) {
                 System.out.println("  Errors: " + errorCount);
             }
@@ -348,5 +386,15 @@ public class OracleInsertCommand implements Callable<Integer> {
             return oneLine.substring(0, 100) + "...";
         }
         return oneLine;
+    }
+
+    /**
+     * Check if a file should be excluded based on its filename.
+     */
+    private boolean shouldExcludeFile(String filename) {
+        if (exclusionList == null || exclusionList.isEmpty()) {
+            return false;
+        }
+        return exclusionList.isExcluded(filename);
     }
 }

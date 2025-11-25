@@ -63,6 +63,12 @@ public class OraclePublishCommand implements Callable<Integer> {
             description = "Also publish to this second queue (fan-out)")
     String secondQueue;
 
+    @Option(names = {"--exclude-file"},
+            description = "File containing patterns to exclude (checks content and correlation ID)")
+    File excludeFile;
+
+    private ExclusionList exclusionList;
+
     // Example query for reference
     private static final String EXAMPLE_QUERY =
         "SELECT message_id, message_content, correlation_id FROM outbound_messages WHERE status = 'PENDING'";
@@ -78,6 +84,16 @@ public class OraclePublishCommand implements Callable<Integer> {
             String effectiveSql = resolveSqlQuery();
             if (effectiveSql == null) {
                 return 1;
+            }
+
+            // Load exclusion list if specified
+            if (excludeFile != null) {
+                if (!excludeFile.exists()) {
+                    System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    return 1;
+                }
+                exclusionList = ExclusionList.fromFile(excludeFile);
+                System.out.println("Loaded " + exclusionList.size() + " exclusion pattern(s) from " + excludeFile.getName());
             }
 
             // Connect to Oracle
@@ -133,9 +149,16 @@ public class OraclePublishCommand implements Callable<Integer> {
                 : DeliveryMode.PERSISTENT;
 
             int messageCount = 0;
+            int excludedCount = 0;
             while (rs.next()) {
                 String content = rs.getString(messageColIndex);
                 String correlationId = correlationColIndex > 0 ? rs.getString(correlationColIndex) : null;
+
+                // Check exclusion
+                if (shouldExclude(content, correlationId)) {
+                    excludedCount++;
+                    continue;
+                }
 
                 messageCount++;
 
@@ -171,12 +194,13 @@ public class OraclePublishCommand implements Callable<Integer> {
             rs.close();
             stmt.close();
 
+            String excludedInfo = excludedCount > 0 ? " (" + excludedCount + " excluded)" : "";
             if (dryRun) {
-                System.out.println("\nDry run complete. Found " + messageCount + " message(s) to publish.");
+                System.out.println("\nDry run complete. Found " + messageCount + " message(s) to publish" + excludedInfo + ".");
             } else {
                 int totalMessages = (queue2 != null) ? messageCount * 2 : messageCount;
                 String queueInfo = (queue2 != null) ? " to 2 queues" : "";
-                System.out.println("\nSuccessfully published " + totalMessages + " message(s) from Oracle to Solace" + queueInfo);
+                System.out.println("\nSuccessfully published " + totalMessages + " message(s) from Oracle to Solace" + queueInfo + excludedInfo);
             }
 
             return 0;
@@ -260,5 +284,23 @@ public class OraclePublishCommand implements Callable<Integer> {
             return oneLine.substring(0, 100) + "...";
         }
         return oneLine;
+    }
+
+    /**
+     * Check if a message should be excluded based on content or correlation ID.
+     */
+    private boolean shouldExclude(String content, String correlationId) {
+        if (exclusionList == null || exclusionList.isEmpty()) {
+            return false;
+        }
+        // Check correlation ID
+        if (correlationId != null && exclusionList.isExcluded(correlationId)) {
+            return true;
+        }
+        // Check content
+        if (content != null && exclusionList.containsExcluded(content)) {
+            return true;
+        }
+        return false;
     }
 }

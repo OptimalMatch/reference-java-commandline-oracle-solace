@@ -5,6 +5,7 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
+import java.io.File;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -53,6 +54,16 @@ public class CopyQueueCommand implements Callable<Integer> {
             description = "Show what would be copied without actually copying")
     boolean dryRun;
 
+    @Option(names = {"--exclude-file"},
+            description = "File containing patterns to exclude (checks content and correlation ID)")
+    File excludeFile;
+
+    @Option(names = {"--exclude-content"},
+            description = "Also check message content against exclusion patterns")
+    boolean excludeByContent;
+
+    private ExclusionList exclusionList;
+
     @Override
     public Integer call() {
         JCSMPSession session = null;
@@ -60,6 +71,16 @@ public class CopyQueueCommand implements Callable<Integer> {
         FlowReceiver consumer = null;
 
         try {
+            // Load exclusion list if specified
+            if (excludeFile != null) {
+                if (!excludeFile.exists()) {
+                    System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    return 1;
+                }
+                exclusionList = ExclusionList.fromFile(excludeFile);
+                System.out.println("Loaded " + exclusionList.size() + " exclusion pattern(s) from " + excludeFile.getName());
+            }
+
             System.out.println("Connecting to " + connection.host + "...");
             session = SolaceConnection.createSession(connection);
             System.out.println("Connected successfully");
@@ -93,23 +114,20 @@ public class CopyQueueCommand implements Callable<Integer> {
             flowProps.setAckMode(moveMessages ? JCSMPProperties.SUPPORTED_MESSAGE_ACK_AUTO : JCSMPProperties.SUPPORTED_MESSAGE_ACK_CLIENT);
 
             final AtomicInteger messageCount = new AtomicInteger(0);
+            final AtomicInteger excludedCount = new AtomicInteger(0);
             final AtomicBoolean done = new AtomicBoolean(false);
             final CountDownLatch latch = new CountDownLatch(1);
             final XMLMessageProducer finalProducer = producer;
             final int maxMessages = maxCount > 0 ? maxCount : Integer.MAX_VALUE;
+            final ExclusionList finalExclusionList = exclusionList;
+            final boolean checkContent = excludeByContent;
 
             consumer = session.createFlow(new XMLMessageListener() {
                 @Override
                 public void onReceive(BytesXMLMessage message) {
                     if (done.get()) return;
 
-                    int count = messageCount.incrementAndGet();
-                    if (count > maxMessages) {
-                        done.set(true);
-                        latch.countDown();
-                        return;
-                    }
-
+                    int count = -1;
                     try {
                         String content = "";
                         if (message instanceof TextMessage) {
@@ -117,6 +135,20 @@ public class CopyQueueCommand implements Callable<Integer> {
                         } else if (message instanceof BytesMessage) {
                             byte[] data = ((BytesMessage) message).getData();
                             content = new String(data);
+                        }
+
+                        // Check exclusion
+                        String correlationId = message.getCorrelationId();
+                        if (shouldExcludeMessage(finalExclusionList, content, correlationId, checkContent)) {
+                            excludedCount.incrementAndGet();
+                            return;
+                        }
+
+                        count = messageCount.incrementAndGet();
+                        if (count > maxMessages) {
+                            done.set(true);
+                            latch.countDown();
+                            return;
                         }
 
                         if (dryRun) {
@@ -161,10 +193,10 @@ public class CopyQueueCommand implements Callable<Integer> {
                         }
 
                     } catch (Exception e) {
-                        System.err.println("Error processing message " + count + ": " + e.getMessage());
+                        System.err.println("Error processing message: " + e.getMessage());
                     }
 
-                    if (count >= maxMessages) {
+                    if (count >= 0 && count >= maxMessages) {
                         done.set(true);
                         latch.countDown();
                     }
@@ -200,11 +232,13 @@ public class CopyQueueCommand implements Callable<Integer> {
             consumer.stop();
 
             int copied = Math.min(messageCount.get(), maxMessages);
+            int excluded = excludedCount.get();
+            String excludedInfo = excluded > 0 ? " (" + excluded + " excluded)" : "";
             if (dryRun) {
-                System.out.println("\nDry run complete. Found " + copied + " message(s) to copy.");
+                System.out.println("\nDry run complete. Found " + copied + " message(s) to copy" + excludedInfo + ".");
             } else {
                 String action = moveMessages ? "moved" : "copied";
-                System.out.println("\nSuccessfully " + action + " " + copied + " message(s) from '" + connection.queue + "' to '" + destinationQueue + "'");
+                System.out.println("\nSuccessfully " + action + " " + copied + " message(s) from '" + connection.queue + "' to '" + destinationQueue + "'" + excludedInfo);
             }
 
             return 0;
@@ -230,5 +264,23 @@ public class CopyQueueCommand implements Callable<Integer> {
         if (s == null) return "null";
         if (s.length() <= maxLen) return s;
         return s.substring(0, maxLen) + "...";
+    }
+
+    /**
+     * Check if a message should be excluded based on correlation ID and optionally content.
+     */
+    private static boolean shouldExcludeMessage(ExclusionList list, String content, String correlationId, boolean checkContent) {
+        if (list == null || list.isEmpty()) {
+            return false;
+        }
+        // Check correlation ID
+        if (correlationId != null && list.isExcluded(correlationId)) {
+            return true;
+        }
+        // Check content if enabled
+        if (checkContent && content != null && list.containsExcluded(content)) {
+            return true;
+        }
+        return false;
     }
 }
