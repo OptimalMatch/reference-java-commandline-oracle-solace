@@ -12,12 +12,14 @@ graph TB
         CON[ConsumeCommand]
         ORA[OraclePublishCommand]
         EXP[OracleExportCommand]
+        INS[OracleInsertCommand]
         DIR[FolderPublishCommand]
 
         CLI --> PUB
         CLI --> CON
         CLI --> ORA
         CLI --> EXP
+        CLI --> INS
         CLI --> DIR
     end
 
@@ -36,9 +38,12 @@ graph TB
     STDIN --> PUB
     FILE --> PUB
     FOLDER --> DIR
+    FOLDER --> INS
     DB --> ORA
     DB --> EXP
     EXP --> FOLDER
+    INS --> DB
+    CON --> FOLDER
 
     PUB --> QUEUE
     ORA --> QUEUE
@@ -175,6 +180,36 @@ sequenceDiagram
     CLI-->>User: Complete
 ```
 
+### Oracle Insert Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as Solace CLI
+    participant FS as File System
+    participant Oracle as Oracle DB
+
+    User->>CLI: oracle-insert --folder /path --table msgs
+    CLI->>CLI: Parse arguments
+    CLI->>FS: Scan directory for files
+    FS-->>CLI: List of files
+    CLI->>CLI: Filter by pattern
+    CLI->>CLI: Sort files (if specified)
+    CLI->>Oracle: Connect via JDBC
+    Oracle-->>CLI: Connection established
+
+    loop For each file
+        CLI->>FS: Read file content
+        FS-->>CLI: File bytes
+        CLI->>Oracle: INSERT INTO table
+        Oracle-->>CLI: Row inserted
+    end
+
+    CLI->>Oracle: Commit transaction
+    CLI->>Oracle: Close connection
+    CLI-->>User: Inserted N records
+```
+
 ### Consume Command Flow
 
 ```mermaid
@@ -246,6 +281,10 @@ classDiagram
         +call() Integer
     }
 
+    class OracleInsertCommand {
+        +call() Integer
+    }
+
     class FolderPublishCommand {
         +call() Integer
     }
@@ -258,6 +297,7 @@ classDiagram
     SolaceCli --> ConsumeCommand
     SolaceCli --> OraclePublishCommand
     SolaceCli --> OracleExportCommand
+    SolaceCli --> OracleInsertCommand
     SolaceCli --> FolderPublishCommand
 
     PublishCommand --> ConnectionOptions
@@ -265,6 +305,7 @@ classDiagram
     OraclePublishCommand --> ConnectionOptions
     OraclePublishCommand --> OracleOptions
     OracleExportCommand --> OracleOptions
+    OracleInsertCommand --> OracleOptions
     FolderPublishCommand --> ConnectionOptions
 
     PublishCommand --> SolaceConnection
@@ -352,6 +393,7 @@ mvn clean package
 | `consume` | `sub`, `receive` | Consume messages from a Solace queue |
 | `oracle-publish` | `ora-pub` | Query Oracle database and publish results as messages |
 | `oracle-export` | `ora-export`, `ora-exp` | Export Oracle query results to files in a folder |
+| `oracle-insert` | `ora-insert`, `ora-ins` | Insert file contents from a folder into Oracle database |
 | `folder-publish` | `folder-pub`, `dir-pub` | Publish messages from files in a folder |
 
 ## Usage
@@ -492,6 +534,28 @@ java -jar target/solace-cli-1.0.0.jar consume \
   -p admin \
   -q my-queue \
   -o ./received-messages
+
+# Save with custom file extension and prefix
+java -jar target/solace-cli-1.0.0.jar consume \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  -o ./received-messages \
+  --extension .xml \
+  --prefix order_
+
+# Use correlation ID as filename
+java -jar target/solace-cli-1.0.0.jar consume \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  -o ./received-messages \
+  --use-correlation-id \
+  --extension .json
 ```
 
 ### Consume Options
@@ -504,6 +568,10 @@ java -jar target/solace-cli-1.0.0.jar consume \
 | `--no-ack` | Don't acknowledge messages |
 | `-V, --verbose` | Show message metadata |
 | `-o, --output-dir` | Write payloads to files |
+| `-e, --extension` | File extension for output files (default: `.txt`) |
+| `--prefix` | Prefix for output filenames (default: `message_`) |
+| `--use-correlation-id` | Use correlation ID as filename when available |
+| `--use-message-id` | Use message ID as filename when available |
 
 ---
 
@@ -755,6 +823,98 @@ java -jar target/solace-cli-1.0.0.jar folder-publish \
   --folder /data/staging \
   --pattern "*.xml" \
   --use-filename-as-correlation
+```
+
+---
+
+## Oracle Insert from Files
+
+Read files from a folder and insert their contents into an Oracle database table. This is useful for loading message files into Oracle for processing or archiving.
+
+```bash
+# Basic usage - insert files into a table
+java -jar target/solace-cli-1.0.0.jar oracle-insert \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --folder /data/messages \
+  --table message_archive \
+  --content-column payload
+
+# Insert with filename tracking
+java -jar target/solace-cli-1.0.0.jar oracle-insert \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --folder /data/messages \
+  --pattern "*.xml" \
+  --table message_archive \
+  --content-column payload \
+  --filename-column source_file
+
+# Use custom INSERT statement from file
+java -jar target/solace-cli-1.0.0.jar ora-ins \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --folder /data/orders \
+  --sql-file insert_order.sql
+
+# Dry run - preview without inserting
+java -jar target/solace-cli-1.0.0.jar oracle-insert \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --folder /data/messages \
+  --table message_archive \
+  --content-column payload \
+  --dry-run
+
+# Recursive folder scan with sorting
+java -jar target/solace-cli-1.0.0.jar oracle-insert \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --folder /data/messages \
+  --pattern "*.json" \
+  --recursive \
+  --sort name \
+  --table json_data \
+  --content-column data
+```
+
+### Oracle Insert Options
+
+| Option | Description |
+|--------|-------------|
+| `--folder, -d` | Source folder containing files to insert (required) |
+| `--pattern, -p` | Glob pattern to filter files (default: `*`) |
+| `--recursive, -r` | Recursively scan subdirectories |
+| `--table, -t` | Target table name (use `--table` or `--sql-file`) |
+| `--content-column, -c` | Column name for file content (default: `content`) |
+| `--filename-column` | Column name to store the filename (optional) |
+| `--sql-file, -f` | File containing custom INSERT statement |
+| `--sort` | Sort order: `name`, `date`, or `size` |
+| `--batch-size` | Commit after N inserts (default: 100) |
+| `--dry-run` | Preview files without inserting |
+
+### Custom SQL File Format
+
+For complex INSERT statements, use `--sql-file`. Use `?` for the content parameter and `??` for the filename:
+
+```sql
+-- insert_order.sql
+INSERT INTO orders (
+    order_data,
+    source_filename,
+    received_timestamp,
+    status
+) VALUES (?, ??, SYSDATE, 'PENDING')
 ```
 
 ---

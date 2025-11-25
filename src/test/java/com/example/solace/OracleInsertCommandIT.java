@@ -1,0 +1,345 @@
+package com.example.solace;
+
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.Statement;
+
+import static org.junit.Assert.*;
+
+/**
+ * Integration tests for OracleInsertCommand using H2 database (Oracle compatibility mode).
+ */
+public class OracleInsertCommandIT {
+
+    @Rule
+    public TemporaryFolder tempFolder = new TemporaryFolder();
+
+    private static final String H2_URL = "jdbc:h2:mem:insertdb;MODE=Oracle;DB_CLOSE_DELAY=-1";
+    private static final String H2_USER = "sa";
+    private static final String H2_PASSWORD = "";
+
+    @Before
+    public void setUp() throws Exception {
+        // Initialize H2 database with test table
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        Statement stmt = conn.createStatement();
+
+        // Drop table if exists
+        stmt.execute("DROP TABLE IF EXISTS insert_messages");
+
+        // Create test table
+        stmt.execute("CREATE TABLE insert_messages (" +
+            "id INT AUTO_INCREMENT PRIMARY KEY, " +
+            "content CLOB, " +
+            "filename VARCHAR(200), " +
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP" +
+            ")");
+
+        stmt.close();
+        conn.close();
+    }
+
+    @Test
+    public void testDryRunWithFiles() throws Exception {
+        // Create test files
+        File file1 = tempFolder.newFile("message1.txt");
+        File file2 = tempFolder.newFile("message2.txt");
+        File file3 = tempFolder.newFile("message3.txt");
+
+        Files.write(file1.toPath(), "Content of message 1".getBytes(StandardCharsets.UTF_8));
+        Files.write(file2.toPath(), "Content of message 2".getBytes(StandardCharsets.UTF_8));
+        Files.write(file3.toPath(), "Content of message 3".getBytes(StandardCharsets.UTF_8));
+
+        // Create command with dry-run
+        OracleInsertCommand command = new OracleInsertCommand();
+        command.sourceFolder = tempFolder.getRoot();
+        command.filePattern = "*.txt";
+        command.tableName = "insert_messages";
+        command.contentColumn = "content";
+        command.filenameColumn = "filename";
+        command.dryRun = true;
+
+        command.oracleConnection = new OracleOptions() {
+            @Override
+            public String getJdbcUrl() {
+                return H2_URL;
+            }
+        };
+        command.oracleConnection.dbUser = H2_USER;
+        command.oracleConnection.dbPassword = H2_PASSWORD;
+
+        Integer result = command.call();
+        assertEquals(Integer.valueOf(0), result);
+
+        // Verify no records were inserted
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        Statement stmt = conn.createStatement();
+        ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM insert_messages");
+        rs.next();
+        assertEquals(0, rs.getInt(1));
+        rs.close();
+        stmt.close();
+        conn.close();
+    }
+
+    @Test
+    public void testInsertWithFilenameColumn() throws Exception {
+        // Create test files
+        File file1 = tempFolder.newFile("order_001.xml");
+        File file2 = tempFolder.newFile("order_002.xml");
+
+        Files.write(file1.toPath(), "<order><id>1</id></order>".getBytes(StandardCharsets.UTF_8));
+        Files.write(file2.toPath(), "<order><id>2</id></order>".getBytes(StandardCharsets.UTF_8));
+
+        // Create and execute command
+        OracleInsertCommand command = new OracleInsertCommand();
+        command.sourceFolder = tempFolder.getRoot();
+        command.filePattern = "*.xml";
+        command.tableName = "insert_messages";
+        command.contentColumn = "content";
+        command.filenameColumn = "filename";
+
+        command.oracleConnection = new OracleOptions() {
+            @Override
+            public String getJdbcUrl() {
+                return H2_URL;
+            }
+        };
+        command.oracleConnection.dbUser = H2_USER;
+        command.oracleConnection.dbPassword = H2_PASSWORD;
+
+        Integer result = command.call();
+        assertEquals(Integer.valueOf(0), result);
+
+        // Verify records were inserted
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        Statement stmt = conn.createStatement();
+        ResultSet rs = stmt.executeQuery("SELECT content, filename FROM insert_messages ORDER BY filename");
+
+        assertTrue(rs.next());
+        assertEquals("<order><id>1</id></order>", rs.getString("content"));
+        assertEquals("order_001", rs.getString("filename"));
+
+        assertTrue(rs.next());
+        assertEquals("<order><id>2</id></order>", rs.getString("content"));
+        assertEquals("order_002", rs.getString("filename"));
+
+        assertFalse(rs.next());
+
+        rs.close();
+        stmt.close();
+        conn.close();
+    }
+
+    @Test
+    public void testInsertWithContentColumnOnly() throws Exception {
+        // Drop and recreate table without filename column
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        Statement stmt = conn.createStatement();
+        stmt.execute("DROP TABLE IF EXISTS content_only");
+        stmt.execute("CREATE TABLE content_only (id INT AUTO_INCREMENT PRIMARY KEY, data CLOB)");
+        stmt.close();
+        conn.close();
+
+        // Create test files
+        File file1 = tempFolder.newFile("data1.json");
+        Files.write(file1.toPath(), "{\"key\": \"value1\"}".getBytes(StandardCharsets.UTF_8));
+
+        // Create and execute command
+        OracleInsertCommand command = new OracleInsertCommand();
+        command.sourceFolder = tempFolder.getRoot();
+        command.filePattern = "*.json";
+        command.tableName = "content_only";
+        command.contentColumn = "data";
+
+        command.oracleConnection = new OracleOptions() {
+            @Override
+            public String getJdbcUrl() {
+                return H2_URL;
+            }
+        };
+        command.oracleConnection.dbUser = H2_USER;
+        command.oracleConnection.dbPassword = H2_PASSWORD;
+
+        Integer result = command.call();
+        assertEquals(Integer.valueOf(0), result);
+
+        // Verify
+        conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        stmt = conn.createStatement();
+        ResultSet rs = stmt.executeQuery("SELECT data FROM content_only");
+        assertTrue(rs.next());
+        assertEquals("{\"key\": \"value1\"}", rs.getString("data"));
+        rs.close();
+        stmt.close();
+        conn.close();
+    }
+
+    @Test
+    public void testInsertWithSortByName() throws Exception {
+        // Create test files with names that won't sort alphabetically by creation time
+        File file3 = tempFolder.newFile("c_third.txt");
+        File file1 = tempFolder.newFile("a_first.txt");
+        File file2 = tempFolder.newFile("b_second.txt");
+
+        Files.write(file1.toPath(), "First".getBytes(StandardCharsets.UTF_8));
+        Files.write(file2.toPath(), "Second".getBytes(StandardCharsets.UTF_8));
+        Files.write(file3.toPath(), "Third".getBytes(StandardCharsets.UTF_8));
+
+        // Create and execute command with sort by name
+        OracleInsertCommand command = new OracleInsertCommand();
+        command.sourceFolder = tempFolder.getRoot();
+        command.filePattern = "*.txt";
+        command.tableName = "insert_messages";
+        command.contentColumn = "content";
+        command.filenameColumn = "filename";
+        command.sortOrder = "name";
+
+        command.oracleConnection = new OracleOptions() {
+            @Override
+            public String getJdbcUrl() {
+                return H2_URL;
+            }
+        };
+        command.oracleConnection.dbUser = H2_USER;
+        command.oracleConnection.dbPassword = H2_PASSWORD;
+
+        Integer result = command.call();
+        assertEquals(Integer.valueOf(0), result);
+
+        // Verify order of insertion (by checking the auto-increment ID)
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        Statement stmt = conn.createStatement();
+        ResultSet rs = stmt.executeQuery("SELECT filename FROM insert_messages ORDER BY id");
+
+        assertTrue(rs.next());
+        assertEquals("a_first", rs.getString("filename"));
+        assertTrue(rs.next());
+        assertEquals("b_second", rs.getString("filename"));
+        assertTrue(rs.next());
+        assertEquals("c_third", rs.getString("filename"));
+
+        rs.close();
+        stmt.close();
+        conn.close();
+    }
+
+    @Test
+    public void testEmptyFolder() throws Exception {
+        // Create an empty subfolder
+        File emptyFolder = tempFolder.newFolder("empty");
+
+        OracleInsertCommand command = new OracleInsertCommand();
+        command.sourceFolder = emptyFolder;
+        command.filePattern = "*.txt";
+        command.tableName = "insert_messages";
+        command.contentColumn = "content";
+
+        command.oracleConnection = new OracleOptions() {
+            @Override
+            public String getJdbcUrl() {
+                return H2_URL;
+            }
+        };
+        command.oracleConnection.dbUser = H2_USER;
+        command.oracleConnection.dbPassword = H2_PASSWORD;
+
+        Integer result = command.call();
+        assertEquals(Integer.valueOf(0), result);
+    }
+
+    @Test
+    public void testPatternFiltering() throws Exception {
+        // Create mixed files
+        tempFolder.newFile("include.xml");
+        tempFolder.newFile("include2.xml");
+        tempFolder.newFile("exclude.txt");
+        tempFolder.newFile("exclude.json");
+
+        Files.write(new File(tempFolder.getRoot(), "include.xml").toPath(),
+            "<data>1</data>".getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(tempFolder.getRoot(), "include2.xml").toPath(),
+            "<data>2</data>".getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(tempFolder.getRoot(), "exclude.txt").toPath(),
+            "excluded".getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(tempFolder.getRoot(), "exclude.json").toPath(),
+            "{}".getBytes(StandardCharsets.UTF_8));
+
+        OracleInsertCommand command = new OracleInsertCommand();
+        command.sourceFolder = tempFolder.getRoot();
+        command.filePattern = "*.xml";
+        command.tableName = "insert_messages";
+        command.contentColumn = "content";
+
+        command.oracleConnection = new OracleOptions() {
+            @Override
+            public String getJdbcUrl() {
+                return H2_URL;
+            }
+        };
+        command.oracleConnection.dbUser = H2_USER;
+        command.oracleConnection.dbPassword = H2_PASSWORD;
+
+        Integer result = command.call();
+        assertEquals(Integer.valueOf(0), result);
+
+        // Verify only XML files were inserted
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        Statement stmt = conn.createStatement();
+        ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM insert_messages");
+        rs.next();
+        assertEquals(2, rs.getInt(1));
+        rs.close();
+        stmt.close();
+        conn.close();
+    }
+
+    @Test
+    public void testCustomSqlFile() throws Exception {
+        // Create custom SQL file
+        File sqlFile = tempFolder.newFile("custom_insert.sql");
+        String customSql = "INSERT INTO insert_messages (content, filename) VALUES (?, ?)";
+        Files.write(sqlFile.toPath(), customSql.getBytes(StandardCharsets.UTF_8));
+
+        // Create test file
+        File dataFile = new File(tempFolder.getRoot(), "data.txt");
+        Files.write(dataFile.toPath(), "Custom SQL content".getBytes(StandardCharsets.UTF_8));
+
+        OracleInsertCommand command = new OracleInsertCommand();
+        command.sourceFolder = tempFolder.getRoot();
+        command.filePattern = "data.txt";
+        command.sqlFile = sqlFile;
+
+        command.oracleConnection = new OracleOptions() {
+            @Override
+            public String getJdbcUrl() {
+                return H2_URL;
+            }
+        };
+        command.oracleConnection.dbUser = H2_USER;
+        command.oracleConnection.dbPassword = H2_PASSWORD;
+
+        Integer result = command.call();
+        assertEquals(Integer.valueOf(0), result);
+
+        // Verify
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        Statement stmt = conn.createStatement();
+        ResultSet rs = stmt.executeQuery("SELECT content, filename FROM insert_messages WHERE filename = 'data'");
+        assertTrue(rs.next());
+        assertEquals("Custom SQL content", rs.getString("content"));
+        assertEquals("data", rs.getString("filename"));
+        rs.close();
+        stmt.close();
+        conn.close();
+    }
+}

@@ -5,6 +5,11 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -45,7 +50,25 @@ public class ConsumeCommand implements Callable<Integer> {
 
     @Option(names = {"--output-dir", "-o"},
             description = "Write message payloads to files in this directory")
-    String outputDir;
+    File outputDir;
+
+    @Option(names = {"--extension", "-e"},
+            description = "File extension for output files (default: .txt)",
+            defaultValue = ".txt")
+    String fileExtension;
+
+    @Option(names = {"--prefix"},
+            description = "Prefix for output filenames (default: message_)",
+            defaultValue = "message_")
+    String filenamePrefix;
+
+    @Option(names = {"--use-correlation-id"},
+            description = "Use correlation ID as filename when available")
+    boolean useCorrelationId;
+
+    @Option(names = {"--use-message-id"},
+            description = "Use message ID as filename when available")
+    boolean useMessageId;
 
     private final AtomicInteger messageCount = new AtomicInteger(0);
     private volatile boolean running = true;
@@ -58,6 +81,26 @@ public class ConsumeCommand implements Callable<Integer> {
         Browser browser = null;
 
         try {
+            // Validate and create output directory if specified
+            if (outputDir != null) {
+                if (!outputDir.exists()) {
+                    System.out.println("Creating output directory: " + outputDir.getAbsolutePath());
+                    if (!outputDir.mkdirs()) {
+                        System.err.println("Error: Failed to create output directory: " + outputDir.getAbsolutePath());
+                        return 1;
+                    }
+                }
+                if (!outputDir.isDirectory()) {
+                    System.err.println("Error: Output path is not a directory: " + outputDir.getAbsolutePath());
+                    return 1;
+                }
+            }
+
+            // Normalize file extension
+            if (!fileExtension.startsWith(".")) {
+                fileExtension = "." + fileExtension;
+            }
+
             System.out.println("Connecting to " + connection.host + "...");
             session = SolaceConnection.createSession(connection);
             System.out.println("Connected successfully");
@@ -208,26 +251,59 @@ public class ConsumeCommand implements Callable<Integer> {
     }
 
     private void writeToFile(BytesXMLMessage message, String content) {
-        java.io.FileWriter writer = null;
         try {
-            String filename = String.format("%s/message_%d_%s.txt",
-                outputDir,
-                messageCount.get() + 1,
-                message.getMessageId() != null ? message.getMessageId() : "unknown");
+            String filename = generateFilename(message);
+            File outputFile = new File(outputDir, filename);
 
-            writer = new java.io.FileWriter(filename);
-            writer.write(content);
-            System.out.println("Written to: " + filename);
-        } catch (Exception e) {
-            System.err.println("Failed to write file: " + e.getMessage());
-        } finally {
-            if (writer != null) {
-                try {
-                    writer.close();
-                } catch (Exception e) {
-                    // ignore
+            try (Writer writer = new OutputStreamWriter(
+                    new FileOutputStream(outputFile), StandardCharsets.UTF_8)) {
+                if (content != null) {
+                    writer.write(content);
                 }
             }
+
+            System.out.println("Written to: " + outputFile.getAbsolutePath());
+        } catch (Exception e) {
+            System.err.println("Failed to write file: " + e.getMessage());
         }
+    }
+
+    private String generateFilename(BytesXMLMessage message) {
+        String baseName = null;
+
+        // Try to use correlation ID if requested
+        if (useCorrelationId && message.getCorrelationId() != null && !message.getCorrelationId().isEmpty()) {
+            baseName = sanitizeFilename(message.getCorrelationId());
+        }
+        // Try to use message ID if requested
+        else if (useMessageId && message.getMessageId() != null) {
+            baseName = sanitizeFilename(message.getMessageId().toString());
+        }
+
+        // Fall back to sequential numbering
+        if (baseName == null || baseName.isEmpty()) {
+            baseName = filenamePrefix + String.format("%06d", messageCount.get() + 1);
+        }
+
+        return baseName + fileExtension;
+    }
+
+    /**
+     * Sanitize a string to be used as a filename.
+     * Removes or replaces characters that are invalid in filenames.
+     */
+    private String sanitizeFilename(String filename) {
+        if (filename == null || filename.isEmpty()) {
+            return null;
+        }
+        // Replace invalid characters with underscore
+        String sanitized = filename.replaceAll("[\\\\/:*?\"<>|\\s]", "_");
+        // Remove leading/trailing dots and spaces
+        sanitized = sanitized.replaceAll("^[.\\s]+|[.\\s]+$", "");
+        // Limit length
+        if (sanitized.length() > 200) {
+            sanitized = sanitized.substring(0, 200);
+        }
+        return sanitized.isEmpty() ? null : sanitized;
     }
 }

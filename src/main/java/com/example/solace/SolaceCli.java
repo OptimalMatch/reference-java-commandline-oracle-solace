@@ -13,6 +13,7 @@ import picocli.CommandLine.Command;
         ConsumeCommand.class,
         OraclePublishCommand.class,
         OracleExportCommand.class,
+        OracleInsertCommand.class,
         FolderPublishCommand.class
     }
 )
