@@ -14,7 +14,8 @@ import picocli.CommandLine.Command;
         OraclePublishCommand.class,
         OracleExportCommand.class,
         OracleInsertCommand.class,
-        FolderPublishCommand.class
+        FolderPublishCommand.class,
+        PerfTestCommand.class
     }
 )
 public class SolaceCli implements Runnable {

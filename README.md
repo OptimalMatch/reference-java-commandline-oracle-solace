@@ -395,6 +395,7 @@ mvn clean package
 | `oracle-export` | `ora-export`, `ora-exp` | Export Oracle query results to files in a folder |
 | `oracle-insert` | `ora-insert`, `ora-ins` | Insert file contents from a folder into Oracle database |
 | `folder-publish` | `folder-pub`, `dir-pub` | Publish messages from files in a folder |
+| `perf-test` | `perf`, `benchmark` | Run performance and load tests against Solace |
 
 ## Usage
 
@@ -996,6 +997,132 @@ java -jar target/solace-cli-1.0.0.jar dir-pub \
 | `--use-filename-as-correlation` | Use filename (without extension) as correlation ID |
 | `--sort` | Sort order: `name`, `date`, or `size` (default: none) |
 | `--dry-run` | Preview files without publishing |
+
+---
+
+## Performance Testing
+
+Run performance and load tests against your Solace broker to measure throughput and latency.
+
+```bash
+# Basic publish performance test (1000 messages)
+java -jar target/solace-cli-1.0.0.jar perf-test \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q test.perf \
+  --mode publish \
+  --count 10000
+
+# Consume performance test
+java -jar target/solace-cli-1.0.0.jar perf-test \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q test.perf \
+  --mode consume \
+  --count 10000
+
+# Bidirectional test with latency measurement
+java -jar target/solace-cli-1.0.0.jar perf-test \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q test.perf \
+  --mode both \
+  --count 5000 \
+  --latency
+
+# High-throughput test with larger messages
+java -jar target/solace-cli-1.0.0.jar benchmark \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q test.perf \
+  --mode publish \
+  --count 100000 \
+  --size 1024 \
+  --delivery-mode DIRECT
+
+# Rate-limited test (1000 msg/s)
+java -jar target/solace-cli-1.0.0.jar perf \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q test.perf \
+  --mode both \
+  --count 10000 \
+  --rate 1000 \
+  --latency
+```
+
+### Performance Test Options
+
+| Option | Description |
+|--------|-------------|
+| `--mode, -m` | Test mode: `publish`, `consume`, or `both` (default: `publish`) |
+| `--count, -c` | Number of messages to send/receive (default: 1000) |
+| `--size, -s` | Message size in bytes (default: 100) |
+| `--rate, -r` | Target messages per second (0 = unlimited) |
+| `--warmup` | Warmup messages before measuring (default: 100) |
+| `--threads, -t` | Number of publisher threads (default: 1) |
+| `--delivery-mode` | `PERSISTENT` or `DIRECT` (default: `PERSISTENT`) |
+| `--report-interval` | Progress report interval in seconds (default: 5) |
+| `--latency` | Measure end-to-end latency (requires `--mode both`) |
+
+### Sample Output
+
+```
+============================================================
+Solace Performance Test
+============================================================
+
+Configuration:
+  Mode:           both
+  Messages:       10,000
+  Message size:   100 bytes
+  Delivery mode:  PERSISTENT
+  Target rate:    unlimited
+  Threads:        1
+  Warmup:         100 messages
+  Host:           tcp://localhost:55555
+  Queue:          test.perf
+
+Connected to Solace (2 sessions)
+Warmup: 100 messages...
+Warmup complete
+
+Starting measurement...
+Sent: 2,500 (2,500/s) | Received: 2,498 (2,498/s) | In-flight: 2
+Sent: 5,000 (2,500/s) | Received: 4,999 (2,501/s) | In-flight: 1
+Sent: 7,500 (2,500/s) | Received: 7,498 (2,499/s) | In-flight: 2
+Sent: 10,000 (2,500/s) | Received: 9,998 (2,500/s) | In-flight: 2
+
+============================================================
+BIDIRECTIONAL TEST RESULTS
+============================================================
+
+Messages sent:     10,000
+Messages received: 10,000
+Errors:            0
+Duration:          4.02 seconds
+Publish rate:      2,487.56 msg/s
+Consume rate:      2,487.56 msg/s
+Data throughput:   0.24 MB/s
+
+Latency Statistics:
+  Min:     45.23 μs
+  Max:     2,345.67 μs
+  Avg:     156.78 μs
+  Median:  123.45 μs
+  P95:     456.78 μs
+  P99:     1,234.56 μs
+```
 
 ---
 

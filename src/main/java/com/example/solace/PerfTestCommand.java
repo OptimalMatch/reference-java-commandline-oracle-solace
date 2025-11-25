@@ -1,0 +1,597 @@
+package com.example.solace;
+
+import com.solacesystems.jcsmp.*;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
+import picocli.CommandLine.Option;
+
+import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+@Command(
+    name = "perf-test",
+    aliases = {"perf", "benchmark"},
+    description = "Run performance tests against Solace broker",
+    mixinStandardHelpOptions = true
+)
+public class PerfTestCommand implements Callable<Integer> {
+
+    @Mixin
+    ConnectionOptions connection;
+
+    @Option(names = {"--mode", "-m"},
+            description = "Test mode: publish, consume, or both (default: publish)",
+            defaultValue = "publish")
+    String mode;
+
+    @Option(names = {"--count", "-c"},
+            description = "Number of messages to send/receive (default: 1000)",
+            defaultValue = "1000")
+    int messageCount;
+
+    @Option(names = {"--size", "-s"},
+            description = "Message size in bytes (default: 100)",
+            defaultValue = "100")
+    int messageSize;
+
+    @Option(names = {"--rate", "-r"},
+            description = "Target messages per second (0 = unlimited)",
+            defaultValue = "0")
+    int targetRate;
+
+    @Option(names = {"--warmup"},
+            description = "Number of warmup messages before measuring (default: 100)",
+            defaultValue = "100")
+    int warmupCount;
+
+    @Option(names = {"--threads", "-t"},
+            description = "Number of publisher threads (default: 1)",
+            defaultValue = "1")
+    int threadCount;
+
+    @Option(names = {"--delivery-mode"},
+            description = "Delivery mode: PERSISTENT or DIRECT (default: PERSISTENT)",
+            defaultValue = "PERSISTENT")
+    String deliveryMode;
+
+    @Option(names = {"--report-interval"},
+            description = "Progress report interval in seconds (default: 5)",
+            defaultValue = "5")
+    int reportInterval;
+
+    @Option(names = {"--latency"},
+            description = "Measure end-to-end latency (requires both publish and consume)")
+    boolean measureLatency;
+
+    // Statistics
+    private final AtomicInteger sentCount = new AtomicInteger(0);
+    private final AtomicInteger receivedCount = new AtomicInteger(0);
+    private final AtomicInteger errorCount = new AtomicInteger(0);
+    private final AtomicLong totalSendTime = new AtomicLong(0);
+    private final List<Long> latencies = Collections.synchronizedList(new ArrayList<Long>());
+
+    private volatile boolean running = true;
+    private long testStartTime;
+    private long testEndTime;
+
+    private static final DecimalFormat df = new DecimalFormat("#,###.##");
+
+    @Override
+    public Integer call() {
+        System.out.println(repeatChar('=', 60));
+        System.out.println("Solace Performance Test");
+        System.out.println(repeatChar('=', 60));
+        System.out.println();
+
+        printTestConfiguration();
+
+        try {
+            switch (mode.toLowerCase()) {
+                case "publish":
+                    return runPublishTest();
+                case "consume":
+                    return runConsumeTest();
+                case "both":
+                    return runBidirectionalTest();
+                default:
+                    System.err.println("Unknown mode: " + mode);
+                    System.err.println("Valid modes: publish, consume, both");
+                    return 1;
+            }
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+            e.printStackTrace();
+            return 1;
+        }
+    }
+
+    private void printTestConfiguration() {
+        System.out.println("Configuration:");
+        System.out.println("  Mode:           " + mode);
+        System.out.println("  Messages:       " + df.format(messageCount));
+        System.out.println("  Message size:   " + df.format(messageSize) + " bytes");
+        System.out.println("  Delivery mode:  " + deliveryMode);
+        System.out.println("  Target rate:    " + (targetRate == 0 ? "unlimited" : df.format(targetRate) + " msg/s"));
+        System.out.println("  Threads:        " + threadCount);
+        System.out.println("  Warmup:         " + df.format(warmupCount) + " messages");
+        System.out.println("  Host:           " + connection.host);
+        System.out.println("  Queue:          " + connection.queue);
+        System.out.println();
+    }
+
+    private int runPublishTest() throws Exception {
+        System.out.println("Starting publish performance test...");
+        System.out.println();
+
+        JCSMPSession session = SolaceConnection.createSession(connection);
+        System.out.println("Connected to Solace");
+
+        XMLMessageProducer producer = session.getMessageProducer(new JCSMPStreamingPublishCorrelatingEventHandler() {
+            @Override
+            public void responseReceivedEx(Object key) {
+                // Message acknowledged
+            }
+
+            @Override
+            public void handleErrorEx(Object key, JCSMPException cause, long timestamp) {
+                errorCount.incrementAndGet();
+            }
+        });
+
+        Queue queue = JCSMPFactory.onlyInstance().createQueue(connection.queue);
+        DeliveryMode delMode = "DIRECT".equalsIgnoreCase(deliveryMode)
+            ? DeliveryMode.DIRECT
+            : DeliveryMode.PERSISTENT;
+
+        // Generate test payload
+        String payload = generatePayload(messageSize);
+
+        // Warmup phase
+        if (warmupCount > 0) {
+            System.out.println("Warmup: sending " + warmupCount + " messages...");
+            for (int i = 0; i < warmupCount; i++) {
+                TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
+                msg.setText(payload);
+                msg.setDeliveryMode(delMode);
+                producer.send(msg, queue);
+            }
+            System.out.println("Warmup complete");
+            System.out.println();
+        }
+
+        // Start progress reporter
+        Thread reporter = startProgressReporter("Sent");
+
+        // Run test
+        System.out.println("Starting measurement...");
+        testStartTime = System.nanoTime();
+
+        long intervalNanos = targetRate > 0 ? 1_000_000_000L / targetRate : 0;
+        long nextSendTime = System.nanoTime();
+
+        for (int i = 0; i < messageCount && running; i++) {
+            // Rate limiting
+            if (intervalNanos > 0) {
+                while (System.nanoTime() < nextSendTime) {
+                    // Busy wait for precise timing
+                }
+                nextSendTime += intervalNanos;
+            }
+
+            long sendStart = System.nanoTime();
+            TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
+            msg.setText(payload);
+            msg.setDeliveryMode(delMode);
+
+            if (measureLatency) {
+                msg.setCorrelationId(String.valueOf(sendStart));
+            }
+
+            producer.send(msg, queue);
+            totalSendTime.addAndGet(System.nanoTime() - sendStart);
+            sentCount.incrementAndGet();
+        }
+
+        testEndTime = System.nanoTime();
+        running = false;
+        reporter.join(1000);
+
+        // Print results
+        printPublishResults();
+
+        producer.close();
+        session.closeSession();
+
+        return errorCount.get() > 0 ? 1 : 0;
+    }
+
+    private int runConsumeTest() throws Exception {
+        System.out.println("Starting consume performance test...");
+        System.out.println("Waiting for " + messageCount + " messages...");
+        System.out.println();
+
+        JCSMPSession session = SolaceConnection.createSession(connection);
+        System.out.println("Connected to Solace");
+
+        CountDownLatch completionLatch = new CountDownLatch(1);
+        Queue queue = JCSMPFactory.onlyInstance().createQueue(connection.queue);
+
+        ConsumerFlowProperties flowProps = new ConsumerFlowProperties();
+        flowProps.setEndpoint(queue);
+        flowProps.setAckMode(JCSMPProperties.SUPPORTED_MESSAGE_ACK_AUTO);
+
+        // Start progress reporter
+        Thread reporter = startProgressReporter("Received");
+
+        testStartTime = System.nanoTime();
+
+        FlowReceiver flowReceiver = session.createFlow(new XMLMessageListener() {
+            @Override
+            public void onReceive(BytesXMLMessage message) {
+                int count = receivedCount.incrementAndGet();
+
+                if (measureLatency && message.getCorrelationId() != null) {
+                    try {
+                        long sendTime = Long.parseLong(message.getCorrelationId());
+                        long latency = System.nanoTime() - sendTime;
+                        latencies.add(latency);
+                    } catch (NumberFormatException e) {
+                        // Ignore invalid correlation IDs
+                    }
+                }
+
+                if (count >= messageCount) {
+                    testEndTime = System.nanoTime();
+                    running = false;
+                    completionLatch.countDown();
+                }
+            }
+
+            @Override
+            public void onException(JCSMPException e) {
+                errorCount.incrementAndGet();
+            }
+        }, flowProps);
+
+        flowReceiver.start();
+
+        // Wait for completion or timeout
+        int timeoutSeconds = Math.max(60, messageCount / 100);
+        boolean completed = completionLatch.await(timeoutSeconds, TimeUnit.SECONDS);
+
+        running = false;
+        reporter.join(1000);
+
+        if (!completed) {
+            System.out.println("\nTimeout waiting for messages");
+            testEndTime = System.nanoTime();
+        }
+
+        // Print results
+        printConsumeResults();
+
+        flowReceiver.stop();
+        flowReceiver.close();
+        session.closeSession();
+
+        return errorCount.get() > 0 || !completed ? 1 : 0;
+    }
+
+    private int runBidirectionalTest() throws Exception {
+        System.out.println("Starting bidirectional performance test...");
+        System.out.println();
+
+        // Create two sessions - one for publishing, one for consuming
+        JCSMPSession pubSession = SolaceConnection.createSession(connection);
+        JCSMPSession subSession = SolaceConnection.createSession(connection);
+        System.out.println("Connected to Solace (2 sessions)");
+
+        CountDownLatch completionLatch = new CountDownLatch(1);
+        Queue queue = JCSMPFactory.onlyInstance().createQueue(connection.queue);
+
+        // Set up consumer first
+        ConsumerFlowProperties flowProps = new ConsumerFlowProperties();
+        flowProps.setEndpoint(queue);
+        flowProps.setAckMode(JCSMPProperties.SUPPORTED_MESSAGE_ACK_AUTO);
+
+        FlowReceiver flowReceiver = subSession.createFlow(new XMLMessageListener() {
+            @Override
+            public void onReceive(BytesXMLMessage message) {
+                int count = receivedCount.incrementAndGet();
+
+                if (measureLatency && message.getCorrelationId() != null) {
+                    try {
+                        long sendTime = Long.parseLong(message.getCorrelationId());
+                        long latency = System.nanoTime() - sendTime;
+                        latencies.add(latency);
+                    } catch (NumberFormatException e) {
+                        // Ignore
+                    }
+                }
+
+                if (count >= messageCount) {
+                    testEndTime = System.nanoTime();
+                    running = false;
+                    completionLatch.countDown();
+                }
+            }
+
+            @Override
+            public void onException(JCSMPException e) {
+                errorCount.incrementAndGet();
+            }
+        }, flowProps);
+
+        flowReceiver.start();
+
+        // Set up producer
+        XMLMessageProducer producer = pubSession.getMessageProducer(new JCSMPStreamingPublishCorrelatingEventHandler() {
+            @Override
+            public void responseReceivedEx(Object key) {}
+
+            @Override
+            public void handleErrorEx(Object key, JCSMPException cause, long timestamp) {
+                errorCount.incrementAndGet();
+            }
+        });
+
+        DeliveryMode delMode = "DIRECT".equalsIgnoreCase(deliveryMode)
+            ? DeliveryMode.DIRECT
+            : DeliveryMode.PERSISTENT;
+
+        String payload = generatePayload(messageSize);
+
+        // Warmup
+        if (warmupCount > 0) {
+            System.out.println("Warmup: " + warmupCount + " messages...");
+            for (int i = 0; i < warmupCount; i++) {
+                TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
+                msg.setText(payload);
+                msg.setDeliveryMode(delMode);
+                producer.send(msg, queue);
+            }
+            // Wait for warmup messages to be consumed
+            Thread.sleep(1000);
+            receivedCount.set(0);
+            latencies.clear();
+            System.out.println("Warmup complete");
+            System.out.println();
+        }
+
+        // Start progress reporter
+        Thread reporter = startBidirectionalProgressReporter();
+
+        // Start test
+        System.out.println("Starting measurement...");
+        testStartTime = System.nanoTime();
+
+        long intervalNanos = targetRate > 0 ? 1_000_000_000L / targetRate : 0;
+        long nextSendTime = System.nanoTime();
+
+        for (int i = 0; i < messageCount && running; i++) {
+            if (intervalNanos > 0) {
+                while (System.nanoTime() < nextSendTime) {
+                    // Busy wait
+                }
+                nextSendTime += intervalNanos;
+            }
+
+            TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
+            msg.setText(payload);
+            msg.setDeliveryMode(delMode);
+            msg.setCorrelationId(String.valueOf(System.nanoTime()));
+
+            producer.send(msg, queue);
+            sentCount.incrementAndGet();
+        }
+
+        // Wait for all messages to be consumed
+        int timeoutSeconds = Math.max(60, messageCount / 100);
+        boolean completed = completionLatch.await(timeoutSeconds, TimeUnit.SECONDS);
+
+        running = false;
+        reporter.join(1000);
+
+        if (!completed) {
+            System.out.println("\nTimeout waiting for messages");
+            testEndTime = System.nanoTime();
+        }
+
+        // Print results
+        printBidirectionalResults();
+
+        producer.close();
+        flowReceiver.stop();
+        flowReceiver.close();
+        pubSession.closeSession();
+        subSession.closeSession();
+
+        return errorCount.get() > 0 || !completed ? 1 : 0;
+    }
+
+    private String generatePayload(int size) {
+        StringBuilder sb = new StringBuilder(size);
+        String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        for (int i = 0; i < size; i++) {
+            sb.append(chars.charAt(i % chars.length()));
+        }
+        return sb.toString();
+    }
+
+    private Thread startProgressReporter(String label) {
+        Thread reporter = new Thread(() -> {
+            int lastCount = 0;
+            while (running) {
+                try {
+                    Thread.sleep(reportInterval * 1000L);
+                    if (!running) break;
+
+                    int currentCount = label.equals("Sent") ? sentCount.get() : receivedCount.get();
+                    int delta = currentCount - lastCount;
+                    double rate = delta / (double) reportInterval;
+
+                    System.out.printf("%s: %s messages (%.0f msg/s)%n",
+                        label, df.format(currentCount), rate);
+                    lastCount = currentCount;
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        });
+        reporter.setDaemon(true);
+        reporter.start();
+        return reporter;
+    }
+
+    private Thread startBidirectionalProgressReporter() {
+        Thread reporter = new Thread(() -> {
+            int lastSent = 0;
+            int lastReceived = 0;
+            while (running) {
+                try {
+                    Thread.sleep(reportInterval * 1000L);
+                    if (!running) break;
+
+                    int sent = sentCount.get();
+                    int received = receivedCount.get();
+                    double sentRate = (sent - lastSent) / (double) reportInterval;
+                    double recvRate = (received - lastReceived) / (double) reportInterval;
+
+                    System.out.printf("Sent: %s (%.0f/s) | Received: %s (%.0f/s) | In-flight: %d%n",
+                        df.format(sent), sentRate,
+                        df.format(received), recvRate,
+                        sent - received);
+
+                    lastSent = sent;
+                    lastReceived = received;
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        });
+        reporter.setDaemon(true);
+        reporter.start();
+        return reporter;
+    }
+
+    private void printPublishResults() {
+        System.out.println();
+        System.out.println(repeatChar('=', 60));
+        System.out.println("PUBLISH TEST RESULTS");
+        System.out.println(repeatChar('=', 60));
+
+        long durationNanos = testEndTime - testStartTime;
+        double durationSeconds = durationNanos / 1_000_000_000.0;
+        double throughput = sentCount.get() / durationSeconds;
+        double avgSendTimeUs = (totalSendTime.get() / (double) sentCount.get()) / 1000.0;
+        double dataThroughputMB = (sentCount.get() * (long) messageSize) / (durationSeconds * 1024 * 1024);
+
+        System.out.println();
+        System.out.println("Messages sent:     " + df.format(sentCount.get()));
+        System.out.println("Errors:            " + df.format(errorCount.get()));
+        System.out.println("Duration:          " + df.format(durationSeconds) + " seconds");
+        System.out.println("Throughput:        " + df.format(throughput) + " msg/s");
+        System.out.println("Data throughput:   " + df.format(dataThroughputMB) + " MB/s");
+        System.out.println("Avg send time:     " + df.format(avgSendTimeUs) + " μs");
+        System.out.println();
+    }
+
+    private void printConsumeResults() {
+        System.out.println();
+        System.out.println(repeatChar('=', 60));
+        System.out.println("CONSUME TEST RESULTS");
+        System.out.println(repeatChar('=', 60));
+
+        long durationNanos = testEndTime - testStartTime;
+        double durationSeconds = durationNanos / 1_000_000_000.0;
+        double throughput = receivedCount.get() / durationSeconds;
+
+        System.out.println();
+        System.out.println("Messages received: " + df.format(receivedCount.get()));
+        System.out.println("Errors:            " + df.format(errorCount.get()));
+        System.out.println("Duration:          " + df.format(durationSeconds) + " seconds");
+        System.out.println("Throughput:        " + df.format(throughput) + " msg/s");
+
+        if (!latencies.isEmpty()) {
+            printLatencyStats();
+        }
+
+        System.out.println();
+    }
+
+    private void printBidirectionalResults() {
+        System.out.println();
+        System.out.println(repeatChar('=', 60));
+        System.out.println("BIDIRECTIONAL TEST RESULTS");
+        System.out.println(repeatChar('=', 60));
+
+        long durationNanos = testEndTime - testStartTime;
+        double durationSeconds = durationNanos / 1_000_000_000.0;
+        double pubThroughput = sentCount.get() / durationSeconds;
+        double subThroughput = receivedCount.get() / durationSeconds;
+        double dataThroughputMB = (receivedCount.get() * (long) messageSize) / (durationSeconds * 1024 * 1024);
+
+        System.out.println();
+        System.out.println("Messages sent:     " + df.format(sentCount.get()));
+        System.out.println("Messages received: " + df.format(receivedCount.get()));
+        System.out.println("Errors:            " + df.format(errorCount.get()));
+        System.out.println("Duration:          " + df.format(durationSeconds) + " seconds");
+        System.out.println("Publish rate:      " + df.format(pubThroughput) + " msg/s");
+        System.out.println("Consume rate:      " + df.format(subThroughput) + " msg/s");
+        System.out.println("Data throughput:   " + df.format(dataThroughputMB) + " MB/s");
+
+        if (!latencies.isEmpty()) {
+            printLatencyStats();
+        }
+
+        System.out.println();
+    }
+
+    private void printLatencyStats() {
+        System.out.println();
+        System.out.println("Latency Statistics:");
+
+        List<Long> sortedLatencies = new ArrayList<>(latencies);
+        Collections.sort(sortedLatencies);
+
+        int size = sortedLatencies.size();
+        if (size == 0) return;
+
+        long min = sortedLatencies.get(0);
+        long max = sortedLatencies.get(size - 1);
+        long median = sortedLatencies.get(size / 2);
+        long p95 = sortedLatencies.get((int) (size * 0.95));
+        long p99 = sortedLatencies.get((int) (size * 0.99));
+
+        long sum = 0;
+        for (Long l : sortedLatencies) {
+            sum += l;
+        }
+        double avg = sum / (double) size;
+
+        System.out.println("  Min:     " + df.format(min / 1000.0) + " μs");
+        System.out.println("  Max:     " + df.format(max / 1000.0) + " μs");
+        System.out.println("  Avg:     " + df.format(avg / 1000.0) + " μs");
+        System.out.println("  Median:  " + df.format(median / 1000.0) + " μs");
+        System.out.println("  P95:     " + df.format(p95 / 1000.0) + " μs");
+        System.out.println("  P99:     " + df.format(p99 / 1000.0) + " μs");
+    }
+
+    /**
+     * Java 8 compatible string repeat function.
+     */
+    private static String repeatChar(char c, int count) {
+        StringBuilder sb = new StringBuilder(count);
+        for (int i = 0; i < count; i++) {
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+}
