@@ -1299,6 +1299,19 @@ java -jar target/solace-cli-1.0.0.jar perf \
   --count 10000 \
   --rate 1000 \
   --latency
+
+# Test with exclusion filtering overhead measurement
+java -jar target/solace-cli-1.0.0.jar perf-test \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q test.perf \
+  --mode both \
+  --count 1000 \
+  --exclude-file exclude-patterns.txt \
+  --exclude-rate 20 \
+  --exclude-content
 ```
 
 ### Performance Test Options
@@ -1314,6 +1327,9 @@ java -jar target/solace-cli-1.0.0.jar perf \
 | `--delivery-mode` | `PERSISTENT` or `DIRECT` (default: `PERSISTENT`) |
 | `--report-interval` | Progress report interval in seconds (default: 5) |
 | `--latency` | Measure end-to-end latency (requires `--mode both`) |
+| `--exclude-file` | File containing exclusion patterns (tests filtering overhead) |
+| `--exclude-rate` | Percentage of messages to mark for exclusion (0-100, default: 10) |
+| `--exclude-content` | Also check message content against exclusion patterns |
 
 ### Sample Output
 
@@ -1362,6 +1378,31 @@ Latency Statistics:
   Median:  123.45 μs
   P95:     456.78 μs
   P99:     1,234.56 μs
+```
+
+### Sample Output with Exclusion Filtering
+
+When running with `--exclude-file`, the output includes exclusion statistics:
+
+```
+============================================================
+BIDIRECTIONAL TEST RESULTS
+============================================================
+
+Messages sent:     1,000
+Messages received: 818
+Messages excluded: 182
+Errors:            0
+Duration:          1.7 seconds
+Publish rate:      587.86 msg/s
+Consume rate:      480.87 msg/s
+Data throughput:   0.05 MB/s
+
+Exclusion Statistics:
+  Total checked:   1,000
+  Excluded:        182 (18.2%)
+  Avg check time:  16.06 μs/msg
+  Total overhead:  16.06 ms
 ```
 
 ---
