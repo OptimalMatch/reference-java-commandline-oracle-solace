@@ -130,6 +130,12 @@ public class OracleExportCommand implements Callable<Integer> {
             int fileCount = 0;
             int skippedCount = 0;
 
+            // Start progress reporter (will print every 2 seconds if running long)
+            ProgressReporter progress = new ProgressReporter("Exporting", 2);
+            if (!dryRun) {
+                progress.start();
+            }
+
             while (rs.next()) {
                 String content = rs.getString(messageColIndex);
 
@@ -152,7 +158,6 @@ public class OracleExportCommand implements Callable<Integer> {
                     fileCount++;
                 } else {
                     if (outputFile.exists() && !overwrite) {
-                        System.out.println("Skipping existing file: " + filename);
                         skippedCount++;
                         continue;
                     }
@@ -165,10 +170,13 @@ public class OracleExportCommand implements Callable<Integer> {
                         }
                     }
 
-                    System.out.println("Wrote file: " + filename + " (" +
-                        (content != null ? content.length() : 0) + " chars)");
+                    progress.increment();
                     fileCount++;
                 }
+            }
+
+            if (!dryRun) {
+                progress.stop();
             }
 
             rs.close();
@@ -178,10 +186,9 @@ public class OracleExportCommand implements Callable<Integer> {
             if (dryRun) {
                 System.out.println("Dry run complete. Would export " + fileCount + " file(s) to " + outputFolder.getAbsolutePath());
             } else {
-                System.out.println("Export complete:");
-                System.out.println("  Files written: " + fileCount);
+                progress.printSummary();
                 if (skippedCount > 0) {
-                    System.out.println("  Files skipped (already exist): " + skippedCount);
+                    System.out.println("  Skipped: " + skippedCount + " (already exist)");
                 }
                 System.out.println("  Output folder: " + outputFolder.getAbsolutePath());
 

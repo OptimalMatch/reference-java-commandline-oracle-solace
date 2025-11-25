@@ -184,6 +184,31 @@ public class ConsumeCommand implements Callable<Integer> {
                 completionLatch.countDown();
             }));
 
+            // Start progress reporter for continuous feedback
+            ProgressReporter progress = (maxMessages > 0)
+                ? new ProgressReporter("Consuming", maxMessages, 5)
+                : new ProgressReporter("Consuming", 5);
+            progress.start();
+
+            // Update progress in a background thread
+            Thread progressUpdater = new Thread(() -> {
+                int lastCount = 0;
+                while (running) {
+                    try {
+                        Thread.sleep(100);
+                        int currentCount = messageCount.get();
+                        if (currentCount > lastCount) {
+                            progress.incrementBy(currentCount - lastCount);
+                            lastCount = currentCount;
+                        }
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
+            });
+            progressUpdater.setDaemon(true);
+            progressUpdater.start();
+
             // Wait for completion
             if (timeout > 0) {
                 boolean completed = completionLatch.await(timeout, TimeUnit.SECONDS);
@@ -193,6 +218,9 @@ public class ConsumeCommand implements Callable<Integer> {
             } else {
                 completionLatch.await();
             }
+
+            running = false;
+            progress.stop();
 
             System.out.println("\nConsumed " + messageCount.get() + " message(s)");
             if (excludedCount.get() > 0) {

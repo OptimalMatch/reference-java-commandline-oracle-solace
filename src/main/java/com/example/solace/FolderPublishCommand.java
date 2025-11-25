@@ -154,12 +154,23 @@ public class FolderPublishCommand implements Callable<Integer> {
             int errorCount = 0;
             int excludedCount = 0;
 
+            // Use progress reporter for batches of more than 10 files
+            ProgressReporter progress = null;
+            boolean showProgress = files.length > 10;
+            if (showProgress) {
+                int totalOps = (queue2 != null) ? files.length * 2 : files.length;
+                progress = new ProgressReporter("Publishing", totalOps, 2);
+                progress.start();
+            }
+
             for (File file : files) {
                 try {
                     // Check filename exclusion
                     if (shouldExcludeFile(file.getName())) {
                         excludedCount++;
-                        System.out.println("Excluded: " + file.getName() + " (filename match)");
+                        if (!showProgress) {
+                            System.out.println("Excluded: " + file.getName() + " (filename match)");
+                        }
                         continue;
                     }
 
@@ -168,7 +179,9 @@ public class FolderPublishCommand implements Callable<Integer> {
                     // Check content exclusion
                     if (excludeByContent && exclusionList != null && exclusionList.containsExcluded(content)) {
                         excludedCount++;
-                        System.out.println("Excluded: " + file.getName() + " (content match)");
+                        if (!showProgress) {
+                            System.out.println("Excluded: " + file.getName() + " (content match)");
+                        }
                         continue;
                     }
 
@@ -191,22 +204,42 @@ public class FolderPublishCommand implements Callable<Integer> {
 
                     producer.send(msg, queue);
                     successCount++;
-                    System.out.println("Published: " + file.getName() + " to '" + connection.queue + "' (" + content.length() + " chars)");
+                    if (showProgress) {
+                        progress.increment();
+                    } else {
+                        System.out.println("Published: " + file.getName() + " to '" + connection.queue + "' (" + content.length() + " chars)");
+                    }
 
                     if (queue2 != null) {
                         producer.send(msg, queue2);
                         successCount++;
-                        System.out.println("Published: " + file.getName() + " to '" + secondQueue + "' (" + content.length() + " chars)");
+                        if (showProgress) {
+                            progress.increment();
+                        } else {
+                            System.out.println("Published: " + file.getName() + " to '" + secondQueue + "' (" + content.length() + " chars)");
+                        }
                     }
 
                 } catch (Exception e) {
                     errorCount++;
-                    System.err.println("Failed to publish " + file.getName() + ": " + e.getMessage());
+                    if (showProgress) {
+                        progress.incrementError();
+                    } else {
+                        System.err.println("Failed to publish " + file.getName() + ": " + e.getMessage());
+                    }
                 }
             }
 
-            System.out.println("\nCompleted: " + successCount + " published, " + errorCount + " failed" +
-                (excludedCount > 0 ? ", " + excludedCount + " excluded" : ""));
+            if (showProgress) {
+                progress.stop();
+                progress.printSummary();
+                if (excludedCount > 0) {
+                    System.out.println("  Excluded: " + excludedCount);
+                }
+            } else {
+                System.out.println("\nCompleted: " + successCount + " published, " + errorCount + " failed" +
+                    (excludedCount > 0 ? ", " + excludedCount + " excluded" : ""));
+            }
             return errorCount > 0 ? 1 : 0;
 
         } catch (Exception e) {

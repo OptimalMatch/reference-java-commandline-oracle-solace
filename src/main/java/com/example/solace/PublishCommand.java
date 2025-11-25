@@ -89,6 +89,15 @@ public class PublishCommand implements Callable<Integer> {
                 ? DeliveryMode.DIRECT
                 : DeliveryMode.PERSISTENT;
 
+            // Use progress reporter for larger batches
+            ProgressReporter progress = null;
+            boolean showProgress = count > 10;
+            if (showProgress) {
+                int totalOps = (queue2 != null) ? count * 2 : count;
+                progress = new ProgressReporter("Publishing", totalOps, 2);
+                progress.start();
+            }
+
             for (int i = 0; i < count; i++) {
                 TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
                 msg.setText(content);
@@ -104,18 +113,32 @@ public class PublishCommand implements Callable<Integer> {
 
                 producer.send(msg, queue);
 
-                String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
-                System.out.println("Published message to queue '" + connection.queue + "'" + msgId);
+                if (showProgress) {
+                    progress.increment();
+                } else {
+                    String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
+                    System.out.println("Published message to queue '" + connection.queue + "'" + msgId);
+                }
 
                 if (queue2 != null) {
                     producer.send(msg, queue2);
-                    System.out.println("Published message to queue '" + secondQueue + "'" + msgId);
+                    if (showProgress) {
+                        progress.increment();
+                    } else {
+                        String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
+                        System.out.println("Published message to queue '" + secondQueue + "'" + msgId);
+                    }
                 }
             }
 
-            int totalMessages = (queue2 != null) ? count * 2 : count;
-            String queueInfo = (queue2 != null) ? " to 2 queues" : "";
-            System.out.println("Successfully published " + totalMessages + " message(s)" + queueInfo);
+            if (showProgress) {
+                progress.stop();
+                progress.printSummary();
+            } else {
+                int totalMessages = (queue2 != null) ? count * 2 : count;
+                String queueInfo = (queue2 != null) ? " to 2 queues" : "";
+                System.out.println("Successfully published " + totalMessages + " message(s)" + queueInfo);
+            }
             return 0;
 
         } catch (Exception e) {

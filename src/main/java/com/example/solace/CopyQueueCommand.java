@@ -217,6 +217,37 @@ public class CopyQueueCommand implements Callable<Integer> {
                 System.out.println("Mode: COPY (messages remain in source queue)");
             }
 
+            // Start progress reporter
+            ProgressReporter progress = (maxCount > 0)
+                ? new ProgressReporter("Copying", maxCount, 2)
+                : new ProgressReporter("Copying", 2);
+            if (!dryRun) {
+                progress.start();
+            }
+
+            // Background thread to update progress from messageCount
+            final ProgressReporter finalProgress = progress;
+            Thread progressUpdater = null;
+            if (!dryRun) {
+                progressUpdater = new Thread(() -> {
+                    int lastCount = 0;
+                    while (!done.get()) {
+                        try {
+                            Thread.sleep(100);
+                            int currentCount = messageCount.get();
+                            if (currentCount > lastCount) {
+                                finalProgress.incrementBy(currentCount - lastCount);
+                                lastCount = currentCount;
+                            }
+                        } catch (InterruptedException e) {
+                            break;
+                        }
+                    }
+                });
+                progressUpdater.setDaemon(true);
+                progressUpdater.start();
+            }
+
             consumer.start();
 
             // Wait for messages or timeout
@@ -231,14 +262,20 @@ public class CopyQueueCommand implements Callable<Integer> {
             done.set(true);
             consumer.stop();
 
+            if (!dryRun) {
+                progress.stop();
+            }
+
             int copied = Math.min(messageCount.get(), maxMessages);
             int excluded = excludedCount.get();
             String excludedInfo = excluded > 0 ? " (" + excluded + " excluded)" : "";
             if (dryRun) {
                 System.out.println("\nDry run complete. Found " + copied + " message(s) to copy" + excludedInfo + ".");
             } else {
-                String action = moveMessages ? "moved" : "copied";
-                System.out.println("\nSuccessfully " + action + " " + copied + " message(s) from '" + connection.queue + "' to '" + destinationQueue + "'" + excludedInfo);
+                progress.printSummary();
+                if (excluded > 0) {
+                    System.out.println("  Excluded: " + excluded);
+                }
             }
 
             return 0;

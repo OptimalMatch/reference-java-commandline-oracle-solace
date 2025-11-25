@@ -150,6 +150,13 @@ public class OraclePublishCommand implements Callable<Integer> {
 
             int messageCount = 0;
             int excludedCount = 0;
+
+            // Start progress reporter (will print every 2 seconds if running long)
+            ProgressReporter progress = new ProgressReporter("Publishing", 2);
+            if (!dryRun) {
+                progress.start();
+            }
+
             while (rs.next()) {
                 String content = rs.getString(messageColIndex);
                 String correlationId = correlationColIndex > 0 ? rs.getString(correlationColIndex) : null;
@@ -182,13 +189,17 @@ public class OraclePublishCommand implements Callable<Integer> {
                     }
 
                     producer.send(msg, queue);
-                    System.out.println("Published message " + messageCount + " to queue '" + solaceConnection.queue + "'");
+                    progress.increment();
 
                     if (queue2 != null) {
                         producer.send(msg, queue2);
-                        System.out.println("Published message " + messageCount + " to queue '" + secondQueue + "'");
+                        progress.increment();
                     }
                 }
+            }
+
+            if (!dryRun) {
+                progress.stop();
             }
 
             rs.close();
@@ -198,9 +209,10 @@ public class OraclePublishCommand implements Callable<Integer> {
             if (dryRun) {
                 System.out.println("\nDry run complete. Found " + messageCount + " message(s) to publish" + excludedInfo + ".");
             } else {
-                int totalMessages = (queue2 != null) ? messageCount * 2 : messageCount;
-                String queueInfo = (queue2 != null) ? " to 2 queues" : "";
-                System.out.println("\nSuccessfully published " + totalMessages + " message(s) from Oracle to Solace" + queueInfo + excludedInfo);
+                progress.printSummary();
+                if (excludedCount > 0) {
+                    System.out.println("  Excluded: " + excludedCount);
+                }
             }
 
             return 0;

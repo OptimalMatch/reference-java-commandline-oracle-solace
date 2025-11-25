@@ -158,6 +158,14 @@ public class OracleInsertCommand implements Callable<Integer> {
             int errorCount = 0;
             int excludedCount = 0;
 
+            // Use progress reporter for batches of more than 10 files
+            ProgressReporter progress = null;
+            boolean showProgress = files.size() > 10;
+            if (showProgress) {
+                progress = new ProgressReporter("Inserting", files.size(), 2);
+                progress.start();
+            }
+
             for (File file : files) {
                 try {
                     String filename = getFilenameWithoutExtension(file.getName());
@@ -165,7 +173,9 @@ public class OracleInsertCommand implements Callable<Integer> {
                     // Check filename exclusion
                     if (shouldExcludeFile(file.getName())) {
                         excludedCount++;
-                        System.out.println("Excluded: " + file.getName() + " (filename match)");
+                        if (!showProgress) {
+                            System.out.println("Excluded: " + file.getName() + " (filename match)");
+                        }
                         continue;
                     }
 
@@ -174,7 +184,9 @@ public class OracleInsertCommand implements Callable<Integer> {
                     // Check content exclusion
                     if (excludeByContent && exclusionList != null && exclusionList.containsExcluded(content)) {
                         excludedCount++;
-                        System.out.println("Excluded: " + file.getName() + " (content match)");
+                        if (!showProgress) {
+                            System.out.println("Excluded: " + file.getName() + " (content match)");
+                        }
                         continue;
                     }
 
@@ -189,33 +201,54 @@ public class OracleInsertCommand implements Callable<Integer> {
                     pstmt.executeUpdate();
                     insertCount++;
 
-                    System.out.println("Inserted: " + file.getName() + " (" + content.length() + " chars)");
+                    if (showProgress) {
+                        progress.increment();
+                    } else {
+                        System.out.println("Inserted: " + file.getName() + " (" + content.length() + " chars)");
+                    }
 
                     // Commit batch
                     if (insertCount % batchSize == 0) {
                         dbConnection.commit();
-                        System.out.println("  Committed batch of " + batchSize + " records");
+                        if (!showProgress) {
+                            System.out.println("  Committed batch of " + batchSize + " records");
+                        }
                     }
 
                 } catch (Exception e) {
-                    System.err.println("Error inserting " + file.getName() + ": " + e.getMessage());
                     errorCount++;
+                    if (showProgress) {
+                        progress.incrementError();
+                    } else {
+                        System.err.println("Error inserting " + file.getName() + ": " + e.getMessage());
+                    }
                 }
             }
 
             // Final commit
             dbConnection.commit();
 
+            if (showProgress) {
+                progress.stop();
+            }
+
             pstmt.close();
 
             System.out.println();
-            System.out.println("Insert complete:");
-            System.out.println("  Records inserted: " + insertCount);
-            if (excludedCount > 0) {
-                System.out.println("  Records excluded: " + excludedCount);
-            }
-            if (errorCount > 0) {
-                System.out.println("  Errors: " + errorCount);
+            if (showProgress) {
+                progress.printSummary();
+                if (excludedCount > 0) {
+                    System.out.println("  Excluded: " + excludedCount);
+                }
+            } else {
+                System.out.println("Insert complete:");
+                System.out.println("  Records inserted: " + insertCount);
+                if (excludedCount > 0) {
+                    System.out.println("  Records excluded: " + excludedCount);
+                }
+                if (errorCount > 0) {
+                    System.out.println("  Errors: " + errorCount);
+                }
             }
             System.out.println("  Target table: " + (tableName != null ? tableName : "(custom SQL)"));
 
