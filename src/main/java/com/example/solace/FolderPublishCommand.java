@@ -65,6 +65,10 @@ public class FolderPublishCommand implements Callable<Integer> {
             defaultValue = "NAME")
     String sortBy;
 
+    @Option(names = {"--second-queue", "-Q"},
+            description = "Also publish to this second queue (fan-out)")
+    String secondQueue;
+
     @Override
     public Integer call() {
         JCSMPSession session = null;
@@ -108,6 +112,7 @@ public class FolderPublishCommand implements Callable<Integer> {
             System.out.println("Connected successfully");
 
             Queue queue = JCSMPFactory.onlyInstance().createQueue(connection.queue);
+            Queue queue2 = (secondQueue != null) ? JCSMPFactory.onlyInstance().createQueue(secondQueue) : null;
 
             producer = session.getMessageProducer(new JCSMPStreamingPublishCorrelatingEventHandler() {
                 @Override
@@ -151,7 +156,13 @@ public class FolderPublishCommand implements Callable<Integer> {
 
                     producer.send(msg, queue);
                     successCount++;
-                    System.out.println("Published: " + file.getName() + " (" + content.length() + " chars)");
+                    System.out.println("Published: " + file.getName() + " to '" + connection.queue + "' (" + content.length() + " chars)");
+
+                    if (queue2 != null) {
+                        producer.send(msg, queue2);
+                        successCount++;
+                        System.out.println("Published: " + file.getName() + " to '" + secondQueue + "' (" + content.length() + " chars)");
+                    }
 
                 } catch (Exception e) {
                     errorCount++;

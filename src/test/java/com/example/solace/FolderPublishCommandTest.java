@@ -259,4 +259,36 @@ public class FolderPublishCommandTest {
         assertTrue(Arrays.asList(aliases).contains("folder-pub"));
         assertTrue(Arrays.asList(aliases).contains("dir-pub"));
     }
+
+    @Test
+    public void testSecondQueueOption() {
+        FolderPublishCommand cmd = new FolderPublishCommand();
+        new CommandLine(cmd).parseArgs(
+            tempDir.getAbsolutePath(),
+            "-H", "tcp://localhost:55555",
+            "-v", "default",
+            "-u", "user",
+            "-q", "primary-queue",
+            "--second-queue", "secondary-queue"
+        );
+
+        assertEquals("primary-queue", cmd.connection.queue);
+        assertEquals("secondary-queue", cmd.secondQueue);
+    }
+
+    @Test
+    public void testSecondQueueShortOption() {
+        FolderPublishCommand cmd = new FolderPublishCommand();
+        new CommandLine(cmd).parseArgs(
+            tempDir.getAbsolutePath(),
+            "-H", "tcp://localhost:55555",
+            "-v", "default",
+            "-u", "user",
+            "-q", "primary-queue",
+            "-Q", "backup-queue"
+        );
+
+        assertEquals("primary-queue", cmd.connection.queue);
+        assertEquals("backup-queue", cmd.secondQueue);
+    }
 }

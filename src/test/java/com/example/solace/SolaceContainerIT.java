@@ -281,6 +281,9 @@ public class SolaceContainerIT {
 
     @Test
     public void testPublishWithCorrelationId() throws Exception {
+        // Drain any existing messages first to ensure test isolation
+        drainQueue();
+
         String testMessage = "Message with correlation";
         String correlationId = "CORR-12345";
 
@@ -576,6 +579,49 @@ public class SolaceContainerIT {
             receiver.close();
 
             return correlationIds;
+        } finally {
+            session.closeSession();
+        }
+    }
+
+    /**
+     * Drain all messages from the queue to ensure test isolation.
+     */
+    private void drainQueue() throws Exception {
+        JCSMPProperties properties = new JCSMPProperties();
+        properties.setProperty(JCSMPProperties.HOST, getSolaceHost());
+        properties.setProperty(JCSMPProperties.VPN_NAME, VPN_NAME);
+        properties.setProperty(JCSMPProperties.USERNAME, USERNAME);
+        properties.setProperty(JCSMPProperties.PASSWORD, PASSWORD);
+
+        JCSMPSession session = JCSMPFactory.onlyInstance().createSession(properties);
+        session.connect();
+
+        try {
+            Queue queue = JCSMPFactory.onlyInstance().createQueue(QUEUE_NAME);
+            ConsumerFlowProperties flowProps = new ConsumerFlowProperties();
+            flowProps.setEndpoint(queue);
+            flowProps.setAckMode(JCSMPProperties.SUPPORTED_MESSAGE_ACK_CLIENT);
+
+            final CountDownLatch latch = new CountDownLatch(1);
+
+            FlowReceiver receiver = session.createFlow(new XMLMessageListener() {
+                @Override
+                public void onReceive(BytesXMLMessage message) {
+                    message.ackMessage();
+                }
+
+                @Override
+                public void onException(JCSMPException e) {
+                    latch.countDown();
+                }
+            }, flowProps);
+
+            receiver.start();
+            // Brief wait to drain any messages
+            Thread.sleep(500);
+            receiver.stop();
+            receiver.close();
         } finally {
             session.closeSession();
         }

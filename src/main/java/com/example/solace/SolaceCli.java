@@ -11,6 +11,7 @@ import picocli.CommandLine.Command;
     subcommands = {
         PublishCommand.class,
         ConsumeCommand.class,
+        CopyQueueCommand.class,
         OraclePublishCommand.class,
         OracleExportCommand.class,
         OracleInsertCommand.class,
