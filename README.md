@@ -301,6 +301,12 @@ classDiagram
         +connect() JCSMPSession
     }
 
+    class ExclusionList {
+        +fromFile(File) ExclusionList
+        +isExcluded(String) boolean
+        +containsExcluded(String) boolean
+    }
+
     SolaceCli --> PublishCommand
     SolaceCli --> ConsumeCommand
     SolaceCli --> CopyQueueCommand
@@ -323,6 +329,12 @@ classDiagram
     CopyQueueCommand --> SolaceConnection
     OraclePublishCommand --> SolaceConnection
     FolderPublishCommand --> SolaceConnection
+
+    ConsumeCommand --> ExclusionList
+    FolderPublishCommand --> ExclusionList
+    OraclePublishCommand --> ExclusionList
+    CopyQueueCommand --> ExclusionList
+    OracleInsertCommand --> ExclusionList
 ```
 
 ## Deployment Architecture
@@ -365,6 +377,7 @@ graph LR
 - **Oracle Export** - Export Oracle query results to files for later publishing
 - **Folder Publishing** - Batch publish messages from files in a directory
 - **Two-Step Workflow** - Export from Oracle to files, then publish to Solace
+- **Exclusion Lists** - Filter out unwanted messages or files using flexible pattern matching
 - Support for reading message content from stdin, file, or command line
 - Verbose output with message metadata
 - Write received messages to files
@@ -612,6 +625,8 @@ java -jar target/solace-cli-1.0.0.jar consume \
 | `--prefix` | Prefix for output filenames (default: `message_`) |
 | `--use-correlation-id` | Use correlation ID as filename when available |
 | `--use-message-id` | Use message ID as filename when available |
+| `--exclude-file` | File containing patterns to exclude |
+| `--exclude-content` | Also check message content against exclusion patterns |
 
 ---
 
@@ -696,6 +711,7 @@ java -jar target/solace-cli-1.0.0.jar ora-pub \
 | `--message-column` | Column name containing message content (default: first column) |
 | `--correlation-column` | Column name for correlation ID (optional) |
 | `-Q, --second-queue` | Also publish to this second queue (fan-out) |
+| `--exclude-file` | File containing patterns to exclude (checks content and correlation ID) |
 | `--dry-run` | Preview messages without publishing |
 
 ### Using SQL Files for Complex Queries
@@ -942,6 +958,8 @@ java -jar target/solace-cli-1.0.0.jar oracle-insert \
 | `--sql-file, -f` | File containing custom INSERT statement |
 | `--sort` | Sort order: `name`, `date`, or `size` |
 | `--batch-size` | Commit after N inserts (default: 100) |
+| `--exclude-file` | File containing patterns to exclude (checks filename) |
+| `--exclude-content` | Also check file content against exclusion patterns |
 | `--dry-run` | Preview files without inserting |
 
 ### Custom SQL File Format
@@ -1037,6 +1055,8 @@ java -jar target/solace-cli-1.0.0.jar dir-pub \
 | `--use-filename-as-correlation` | Use filename (without extension) as correlation ID |
 | `--sort` | Sort order: `name`, `date`, or `size` (default: none) |
 | `-Q, --second-queue` | Also publish to this second queue (fan-out) |
+| `--exclude-file` | File containing filename patterns to exclude |
+| `--exclude-content` | Also check file content against exclusion patterns |
 | `--dry-run` | Preview files without publishing |
 
 ---
@@ -1117,7 +1137,106 @@ java -jar target/solace-cli-1.0.0.jar copy-queue \
 | `--move` | Move messages (acknowledge after copy) instead of browse |
 | `--preserve-properties` | Preserve correlation ID, TTL, and other properties |
 | `--delivery-mode` | Override delivery mode: PERSISTENT or DIRECT |
+| `--exclude-file` | File containing patterns to exclude (checks correlation ID) |
+| `--exclude-content` | Also check message content against exclusion patterns |
 | `--dry-run` | Preview messages without copying |
+
+---
+
+## Exclusion Lists
+
+Filter out unwanted messages or files during processing using flexible pattern matching. Create an exclusion file with patterns (one per line) and reference it with `--exclude-file`.
+
+### Exclusion File Format
+
+```
+# Comments start with hash
+# Empty lines are ignored
+
+# Exact match
+test-message-001
+debug-payload
+
+# Wildcard patterns (* matches any sequence, ? matches single char)
+test-*.xml
+order_???.json
+backup_*
+
+# Regex patterns (prefix with "regex:")
+regex:^temp-\d{3}$
+regex:.*DEBUG.*
+regex:^test-[a-z]+\.json$
+```
+
+### Pattern Types
+
+| Type | Syntax | Example | Matches |
+|------|--------|---------|---------|
+| Exact | `value` | `test-001` | Only "test-001" |
+| Wildcard | `*` and `?` | `order-*.xml` | "order-123.xml", "order-abc.xml" |
+| Regex | `regex:pattern` | `regex:^test-\d+$` | "test-1", "test-999" |
+
+### Commands Supporting Exclusion
+
+| Command | `--exclude-file` Checks | `--exclude-content` |
+|---------|------------------------|---------------------|
+| `consume` | Correlation ID | Message content |
+| `folder-publish` | Filename | File content |
+| `oracle-publish` | Correlation ID + Content | N/A (always checks both) |
+| `copy-queue` | Correlation ID | Message content |
+| `oracle-insert` | Filename | File content |
+
+### Usage Examples
+
+```bash
+# Create exclusion file
+cat > exclude.txt << 'EOF'
+# Skip test and debug messages
+test-*
+debug-*
+regex:^temp-\d+$
+EOF
+
+# Consume messages, excluding matches
+java -jar target/solace-cli-1.0.0.jar consume \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --exclude-file exclude.txt
+
+# Exclude by content as well
+java -jar target/solace-cli-1.0.0.jar consume \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --exclude-file exclude.txt \
+  --exclude-content
+
+# Copy queue, filtering out certain messages
+java -jar target/solace-cli-1.0.0.jar copy-queue \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q source-queue \
+  --dest destination-queue \
+  --exclude-file exclude.txt
+
+# Publish folder contents, excluding certain files
+java -jar target/solace-cli-1.0.0.jar folder-publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --folder /path/to/messages \
+  --exclude-file exclude.txt \
+  --exclude-content
+```
 
 ---
 
