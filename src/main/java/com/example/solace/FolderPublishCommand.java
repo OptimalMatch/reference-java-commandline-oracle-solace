@@ -69,6 +69,16 @@ public class FolderPublishCommand implements Callable<Integer> {
             description = "Also publish to this second queue (fan-out)")
     String secondQueue;
 
+    @Option(names = {"--exclude-file"},
+            description = "File containing filename patterns to exclude (one per line)")
+    File excludeFile;
+
+    @Option(names = {"--exclude-content"},
+            description = "Also exclude files whose content matches patterns in exclude file")
+    boolean excludeByContent;
+
+    private ExclusionList exclusionList;
+
     @Override
     public Integer call() {
         JCSMPSession session = null;
@@ -83,6 +93,16 @@ public class FolderPublishCommand implements Callable<Integer> {
             if (!folder.isDirectory()) {
                 System.err.println("Error: Path is not a folder: " + folderPath);
                 return 1;
+            }
+
+            // Load exclusion list if specified
+            if (excludeFile != null) {
+                if (!excludeFile.exists()) {
+                    System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    return 1;
+                }
+                exclusionList = ExclusionList.fromFile(excludeFile);
+                System.out.println("Loaded " + exclusionList.size() + " exclusion pattern(s) from " + excludeFile.getName());
             }
 
             // Get files matching pattern
@@ -132,10 +152,25 @@ public class FolderPublishCommand implements Callable<Integer> {
 
             int successCount = 0;
             int errorCount = 0;
+            int excludedCount = 0;
 
             for (File file : files) {
                 try {
+                    // Check filename exclusion
+                    if (shouldExcludeFile(file.getName())) {
+                        excludedCount++;
+                        System.out.println("Excluded: " + file.getName() + " (filename match)");
+                        continue;
+                    }
+
                     String content = readFile(file);
+
+                    // Check content exclusion
+                    if (excludeByContent && exclusionList != null && exclusionList.containsExcluded(content)) {
+                        excludedCount++;
+                        System.out.println("Excluded: " + file.getName() + " (content match)");
+                        continue;
+                    }
 
                     TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
                     msg.setText(content);
@@ -170,7 +205,8 @@ public class FolderPublishCommand implements Callable<Integer> {
                 }
             }
 
-            System.out.println("\nCompleted: " + successCount + " published, " + errorCount + " failed");
+            System.out.println("\nCompleted: " + successCount + " published, " + errorCount + " failed" +
+                (excludedCount > 0 ? ", " + excludedCount + " excluded" : ""));
             return errorCount > 0 ? 1 : 0;
 
         } catch (Exception e) {
@@ -278,5 +314,15 @@ public class FolderPublishCommand implements Callable<Integer> {
             return name.substring(0, lastDot);
         }
         return name;
+    }
+
+    /**
+     * Check if a file should be excluded based on its filename.
+     */
+    private boolean shouldExcludeFile(String filename) {
+        if (exclusionList == null || exclusionList.isEmpty()) {
+            return false;
+        }
+        return exclusionList.isExcluded(filename);
     }
 }

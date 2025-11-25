@@ -70,9 +70,19 @@ public class ConsumeCommand implements Callable<Integer> {
             description = "Use message ID as filename when available")
     boolean useMessageId;
 
+    @Option(names = {"--exclude-file"},
+            description = "File containing patterns to exclude (one per line)")
+    File excludeFile;
+
+    @Option(names = {"--exclude-content"},
+            description = "Exclude messages whose content matches patterns in exclude file")
+    boolean excludeByContent;
+
     private final AtomicInteger messageCount = new AtomicInteger(0);
+    private final AtomicInteger excludedCount = new AtomicInteger(0);
     private volatile boolean running = true;
     private CountDownLatch completionLatch;
+    private ExclusionList exclusionList;
 
     @Override
     public Integer call() {
@@ -101,6 +111,16 @@ public class ConsumeCommand implements Callable<Integer> {
                 fileExtension = "." + fileExtension;
             }
 
+            // Load exclusion list if specified
+            if (excludeFile != null) {
+                if (!excludeFile.exists()) {
+                    System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    return 1;
+                }
+                exclusionList = ExclusionList.fromFile(excludeFile);
+                System.out.println("Loaded " + exclusionList.size() + " exclusion pattern(s) from " + excludeFile.getName());
+            }
+
             System.out.println("Connecting to " + connection.host + "...");
             session = SolaceConnection.createSession(connection);
             System.out.println("Connected successfully");
@@ -124,8 +144,17 @@ public class ConsumeCommand implements Callable<Integer> {
             flowReceiver = session.createFlow(new XMLMessageListener() {
                 @Override
                 public void onReceive(BytesXMLMessage message) {
+                    // Check exclusion before processing
+                    if (shouldExclude(message)) {
+                        excludedCount.incrementAndGet();
+                        if (!noAck) {
+                            message.ackMessage();
+                        }
+                        return;
+                    }
+
                     processMessage(message);
-                    
+
                     if (!noAck) {
                         message.ackMessage();
                     }
@@ -166,6 +195,9 @@ public class ConsumeCommand implements Callable<Integer> {
             }
 
             System.out.println("\nConsumed " + messageCount.get() + " message(s)");
+            if (excludedCount.get() > 0) {
+                System.out.println("Excluded " + excludedCount.get() + " message(s)");
+            }
             return 0;
 
         } catch (Exception e) {
@@ -196,7 +228,12 @@ public class ConsumeCommand implements Callable<Integer> {
 
         BytesXMLMessage message;
         int count = 0;
+        int excluded = 0;
         while ((message = browser.getNext()) != null) {
+            if (shouldExclude(message)) {
+                excluded++;
+                continue;
+            }
             processMessage(message);
             count++;
             if (maxMessages > 0 && count >= maxMessages) {
@@ -205,6 +242,9 @@ public class ConsumeCommand implements Callable<Integer> {
         }
 
         System.out.println("\nBrowsed " + count + " message(s)");
+        if (excluded > 0) {
+            System.out.println("Excluded " + excluded + " message(s)");
+        }
         browser.close();
         return 0;
     }
@@ -305,5 +345,30 @@ public class ConsumeCommand implements Callable<Integer> {
             sanitized = sanitized.substring(0, 200);
         }
         return sanitized.isEmpty() ? null : sanitized;
+    }
+
+    /**
+     * Check if a message should be excluded based on exclusion patterns.
+     */
+    private boolean shouldExclude(BytesXMLMessage message) {
+        if (exclusionList == null || exclusionList.isEmpty()) {
+            return false;
+        }
+
+        // Check correlation ID against exclusion patterns
+        String correlationId = message.getCorrelationId();
+        if (correlationId != null && exclusionList.isExcluded(correlationId)) {
+            return true;
+        }
+
+        // Check content if --exclude-content is specified
+        if (excludeByContent) {
+            String content = extractContent(message);
+            if (content != null && exclusionList.containsExcluded(content)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
