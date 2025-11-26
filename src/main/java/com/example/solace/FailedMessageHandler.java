@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,7 +27,7 @@ import java.util.List;
 public class FailedMessageHandler {
 
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
-        DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS");
+        DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS").withZone(ZoneId.systemDefault());
 
     private final File failedDir;
     private final File retryDir;
