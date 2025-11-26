@@ -709,7 +709,7 @@ wizard_setup_queues() {
 
     local semp_host semp_port semp_user semp_pass
     prompt semp_host "SEMP API host" "${SEMP_HOST:-localhost}"
-    prompt semp_port "SEMP API port" "${SEMP_PORT:-8080}"
+    prompt semp_port "SEMP API port" "${SEMP_PORT:-8095}"
     prompt semp_user "SEMP admin username" "${SEMP_USER:-admin}"
     prompt semp_pass "SEMP admin password" "${SEMP_PASS:-admin}" "true"
 

@@ -10,14 +10,135 @@ For the easiest experience, use the interactive wizard:
 ./wizard.sh
 ```
 
-The wizard provides a menu-driven interface that guides you through:
-- Connection setup
-- Publishing messages
-- Consuming messages
-- Batch operations
-- Performance testing
-- Oracle integration
-- Queue setup
+The wizard provides a menu-driven interface that guides you through all CLI operations.
+
+### Main Menu
+
+```
+  ____        _                   ____ _     ___
+ / ___|  ___ | | __ _  ___ ___   / ___| |   |_ _|
+ \___ \ / _ \| |/ _` |/ __/ _ \ | |   | |    | |
+  ___) | (_) | | (_| | (_|  __/ | |___| |___ | |
+ |____/ \___/|_|\__,_|\___\___| \____|_____|___|
+
+Interactive Wizard
+==============================================
+
+● Connected to: tcp://localhost:55555 (VPN: default)
+
+What would you like to do?
+
+  Messages
+    1) Publish message
+    2) Consume messages
+    3) Folder publish (batch)
+    4) Copy/Move queue
+
+  Testing
+    5) Performance test
+
+  Oracle Integration
+    6) Oracle operations
+
+  Setup
+    7) Configure connection
+    8) Queue setup (SEMP)
+
+  Other
+    9) Help
+    0) Exit
+
+Enter choice:
+```
+
+### Wizard Features
+
+| Option | Description |
+|--------|-------------|
+| **1) Publish message** | Send messages manually, from file, or generate test messages |
+| **2) Consume messages** | Receive messages with browse, consume, or no-ack modes |
+| **3) Folder publish** | Batch publish all files from a directory |
+| **4) Copy/Move queue** | Transfer messages between queues |
+| **5) Performance test** | Run throughput and latency benchmarks |
+| **6) Oracle operations** | Database integration (publish, export, insert) |
+| **7) Configure connection** | Change Solace host, VPN, credentials |
+| **8) Queue setup** | Create/delete queues via SEMP API |
+
+### Example: Publishing Messages
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Publish Message
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Target queue [demo.queue]:
+
+Message source:
+How do you want to provide the message?
+
+  1) Type message content
+  2) Read from file
+  3) Generate test messages
+
+Enter choice (1-3): 3
+Number of messages [10]:
+
+Configure advanced options? [y/N]:
+
+Executing:
+solace-cli publish -H tcp://localhost:55555 -v default -u admin -p **** -q demo.queue -c 10
+```
+
+### Example: Consuming Messages
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Consume Messages
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Source queue [demo.queue]:
+
+Consume mode:
+
+  1) Consume (remove from queue)
+  2) Browse (non-destructive)
+  3) Consume without acknowledgment
+
+Enter choice (1-3): 2
+Number of messages (0=unlimited) [10]:
+Timeout in seconds (0=wait forever) [30]:
+
+Save messages to files? [y/N]:
+Show verbose output with metadata? [Y/n]:
+```
+
+### Example: Queue Setup via SEMP
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Queue Setup (SEMP API)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SEMP API host [localhost]:
+SEMP API port [8095]:
+SEMP admin username [admin]:
+SEMP admin password [admin]:
+
+Action:
+
+  1) Create demo queues
+  2) Check queue status
+  3) Delete demo queues
+
+Enter choice (1-3):
+```
+
+The wizard automatically:
+- Validates connection settings on startup
+- Shows the current connection status
+- Provides sensible defaults for all prompts
+- Displays the exact CLI command being executed
+- Returns to the main menu after each operation
 
 ## Prerequisites
 

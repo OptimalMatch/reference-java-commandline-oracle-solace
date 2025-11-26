@@ -18,6 +18,12 @@ export ORACLE_SERVICE="${ORACLE_SERVICE:-ORCL}"
 export ORACLE_USER="${ORACLE_USER:-scott}"
 export ORACLE_PASS="${ORACLE_PASS:-tiger}"
 
+# SEMP API Settings (for queue management)
+export SEMP_HOST="${SEMP_HOST:-localhost}"
+export SEMP_PORT="${SEMP_PORT:-8095}"
+export SEMP_USER="${SEMP_USER:-admin}"
+export SEMP_PASS="${SEMP_PASS:-admin}"
+
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
