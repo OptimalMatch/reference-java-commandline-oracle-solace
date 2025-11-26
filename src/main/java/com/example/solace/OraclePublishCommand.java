@@ -12,6 +12,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import static com.example.solace.AuditLogger.maskSensitive;
@@ -72,6 +74,10 @@ public class OraclePublishCommand implements Callable<Integer> {
             description = "File containing patterns to exclude (checks content and correlation ID)")
     File excludeFile;
 
+    @Option(names = {"--failed-dir"},
+            description = "Directory to save failed messages for later retry")
+    File failedDir;
+
     private ExclusionList exclusionList;
 
     // Example query for reference
@@ -84,6 +90,11 @@ public class OraclePublishCommand implements Callable<Integer> {
         JCSMPSession solaceSession = null;
         XMLMessageProducer producer = null;
         AuditLogger audit = AuditLogger.create(auditOptions, "oracle-publish");
+        FailedMessageHandler failedHandler = new FailedMessageHandler(failedDir, null);
+        List<String> failedMessageIds = new ArrayList<>();
+        int messageCount = 0;
+        int excludedCount = 0;
+        int failedCount = 0;
 
         // Log parameters (mask sensitive values)
         audit.addParameter("solaceHost", solaceConnection.host)
@@ -100,9 +111,16 @@ public class OraclePublishCommand implements Callable<Integer> {
              .addParameter("deliveryMode", deliveryMode)
              .addParameter("ttl", ttl)
              .addParameter("dryRun", dryRun)
-             .addParameter("secondQueue", secondQueue);
+             .addParameter("secondQueue", secondQueue)
+             .addParameter("failedDir", failedDir != null ? failedDir.getAbsolutePath() : null);
 
         try {
+            // Initialize failed message directory if specified
+            if (!failedHandler.initFailedDir()) {
+                audit.setError("Failed to initialize failed message directory");
+                audit.logCompletion(1);
+                return 1;
+            }
             // Resolve SQL query from --sql or --sql-file
             String effectiveSql = resolveSqlQuery();
             if (effectiveSql == null) {
@@ -173,16 +191,15 @@ public class OraclePublishCommand implements Callable<Integer> {
                 ? DeliveryMode.DIRECT
                 : DeliveryMode.PERSISTENT;
 
-            int messageCount = 0;
-            int excludedCount = 0;
-
             // Start progress reporter (will print every 2 seconds if running long)
             ProgressReporter progress = new ProgressReporter("Publishing", 2);
             if (!dryRun) {
                 progress.start();
             }
 
+            int rowIndex = 0;
             while (rs.next()) {
+                rowIndex++;
                 String content = rs.getString(messageColIndex);
                 String correlationId = correlationColIndex > 0 ? rs.getString(correlationColIndex) : null;
 
@@ -192,33 +209,44 @@ public class OraclePublishCommand implements Callable<Integer> {
                     continue;
                 }
 
-                messageCount++;
-
                 if (dryRun) {
+                    messageCount++;
                     System.out.println("Message " + messageCount + ":");
                     System.out.println("  Content: " + truncate(content, 100));
                     if (correlationId != null) {
                         System.out.println("  Correlation ID: " + correlationId);
                     }
                 } else {
-                    TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
-                    msg.setText(content);
-                    msg.setDeliveryMode(mode);
+                    try {
+                        TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
+                        msg.setText(content);
+                        msg.setDeliveryMode(mode);
 
-                    if (correlationId != null) {
-                        msg.setCorrelationId(correlationId);
-                    }
+                        if (correlationId != null) {
+                            msg.setCorrelationId(correlationId);
+                        }
 
-                    if (ttl > 0) {
-                        msg.setTimeToLive(ttl);
-                    }
+                        if (ttl > 0) {
+                            msg.setTimeToLive(ttl);
+                        }
 
-                    producer.send(msg, queue);
-                    progress.increment();
-
-                    if (queue2 != null) {
-                        producer.send(msg, queue2);
+                        producer.send(msg, queue);
+                        messageCount++;
                         progress.increment();
+
+                        if (queue2 != null) {
+                            producer.send(msg, queue2);
+                            progress.increment();
+                        }
+                    } catch (Exception e) {
+                        failedCount++;
+                        String msgId = correlationId != null ? correlationId : "row-" + rowIndex;
+                        failedMessageIds.add(msgId);
+                        progress.incrementError();
+
+                        // Save failed message if directory specified
+                        failedHandler.saveFailedMessage(content, correlationId, solaceConnection.queue,
+                            e.getMessage(), rowIndex);
                     }
                 }
             }
@@ -231,6 +259,7 @@ public class OraclePublishCommand implements Callable<Integer> {
             stmt.close();
 
             String excludedInfo = excludedCount > 0 ? " (" + excludedCount + " excluded)" : "";
+            String failedInfo = failedCount > 0 ? " (" + failedCount + " failed)" : "";
             if (dryRun) {
                 System.out.println("\nDry run complete. Found " + messageCount + " message(s) to publish" + excludedInfo + ".");
             } else {
@@ -238,20 +267,50 @@ public class OraclePublishCommand implements Callable<Integer> {
                 if (excludedCount > 0) {
                     System.out.println("  Excluded: " + excludedCount);
                 }
+                if (failedCount > 0) {
+                    System.out.println("  Failed: " + failedCount);
+                    if (failedHandler.isSaveEnabled()) {
+                        System.out.println("Failed messages saved to: " + failedDir.getAbsolutePath());
+                    }
+                }
             }
 
-            // Log success results
-            audit.addResult("rowsQueried", messageCount + excludedCount)
+            // Log results with partial progress
+            audit.addResult("rowsQueried", messageCount + excludedCount + failedCount)
                  .addResult("messagesPublished", dryRun ? 0 : messageCount)
+                 .addResult("messagesFailed", failedCount)
                  .addResult("messagesExcluded", excludedCount)
                  .addResult("dryRun", dryRun)
                  .addResult("queuesUsed", (secondQueue != null && !dryRun) ? 2 : 1);
-            audit.logCompletion(0);
-            return 0;
+
+            if (!failedMessageIds.isEmpty()) {
+                audit.addResult("failedMessageIds", failedMessageIds);
+            }
+            if (failedHandler.isSaveEnabled() && failedHandler.getSavedCount() > 0) {
+                audit.addResult("failedMessagesSaved", failedHandler.getSavedCount());
+                audit.addResult("failedDir", failedDir.getAbsolutePath());
+            }
+
+            int exitCode = failedCount > 0 ? 1 : 0;
+            if (failedCount > 0) {
+                audit.setError(failedCount + " message(s) failed to publish");
+            }
+            audit.logCompletion(exitCode);
+            return exitCode;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+
+            // Log partial progress even on exception
+            audit.addResult("messagesPublished", messageCount)
+                 .addResult("messagesFailed", failedCount)
+                 .addResult("messagesExcluded", excludedCount);
+
+            if (!failedMessageIds.isEmpty()) {
+                audit.addResult("failedMessageIds", failedMessageIds);
+            }
+
             audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         } finally {

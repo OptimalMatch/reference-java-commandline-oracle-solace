@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -171,6 +172,14 @@ public class AuditLogger {
             json.append(value);
         } else if (value instanceof Boolean) {
             json.append(value);
+        } else if (value instanceof List) {
+            json.append("[");
+            List<?> list = (List<?>) value;
+            for (int i = 0; i < list.size(); i++) {
+                if (i > 0) json.append(",");
+                appendValue(json, list.get(i));
+            }
+            json.append("]");
         } else {
             json.append("\"").append(escapeJson(value.toString())).append("\"");
         }
