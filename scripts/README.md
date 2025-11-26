@@ -1,6 +1,23 @@
 # Solace CLI Example Scripts
 
-This directory contains bash scripts demonstrating all features of the Solace CLI tool.
+This directory contains bash scripts demonstrating all features of the Solace CLI tool, including an **interactive wizard** for guided usage.
+
+## Quick Start with Wizard
+
+For the easiest experience, use the interactive wizard:
+
+```bash
+./wizard.sh
+```
+
+The wizard provides a menu-driven interface that guides you through:
+- Connection setup
+- Publishing messages
+- Consuming messages
+- Batch operations
+- Performance testing
+- Oracle integration
+- Queue setup
 
 ## Prerequisites
 
@@ -40,6 +57,7 @@ This directory contains bash scripts demonstrating all features of the Solace CL
 
 | Script | Description |
 |--------|-------------|
+| `wizard.sh` | **Interactive wizard** - guided menu-driven interface |
 | `common.sh` | Shared configuration and helper functions (source this) |
 | `setup-solace.sh` | Create/delete queues via SEMP API |
 | `examples-publish.sh` | Basic message publishing examples |
