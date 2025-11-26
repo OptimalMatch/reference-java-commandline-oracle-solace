@@ -14,6 +14,8 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.concurrent.Callable;
 
+import static com.example.solace.AuditLogger.maskSensitive;
+
 @Command(
     name = "folder-publish",
     aliases = {"folder-pub", "dir-pub"},
@@ -24,6 +26,9 @@ public class FolderPublishCommand implements Callable<Integer> {
 
     @Mixin
     ConnectionOptions connection;
+
+    @Mixin
+    AuditOptions auditOptions;
 
     @Parameters(index = "0",
             description = "Folder path containing message files")
@@ -83,15 +88,31 @@ public class FolderPublishCommand implements Callable<Integer> {
     public Integer call() {
         JCSMPSession session = null;
         XMLMessageProducer producer = null;
+        AuditLogger audit = AuditLogger.create(auditOptions, "folder-publish");
+
+        // Log parameters (mask sensitive values)
+        audit.addParameter("host", connection.host)
+             .addParameter("vpn", connection.vpn)
+             .addParameter("username", connection.username)
+             .addParameter("password", maskSensitive(connection.password))
+             .addParameter("queue", connection.queue)
+             .addParameter("folderPath", folderPath)
+             .addParameter("filePattern", filePattern)
+             .addParameter("recursive", recursive)
+             .addParameter("deliveryMode", deliveryMode)
+             .addParameter("dryRun", dryRun)
+             .addParameter("secondQueue", secondQueue);
 
         try {
             File folder = new File(folderPath);
             if (!folder.exists()) {
                 System.err.println("Error: Folder does not exist: " + folderPath);
+                audit.setError("Folder does not exist").logCompletion(1);
                 return 1;
             }
             if (!folder.isDirectory()) {
                 System.err.println("Error: Path is not a folder: " + folderPath);
+                audit.setError("Path is not a folder").logCompletion(1);
                 return 1;
             }
 
@@ -99,6 +120,7 @@ public class FolderPublishCommand implements Callable<Integer> {
             if (excludeFile != null) {
                 if (!excludeFile.exists()) {
                     System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    audit.setError("Exclude file not found").logCompletion(1);
                     return 1;
                 }
                 exclusionList = ExclusionList.fromFile(excludeFile);
@@ -240,11 +262,19 @@ public class FolderPublishCommand implements Callable<Integer> {
                 System.out.println("\nCompleted: " + successCount + " published, " + errorCount + " failed" +
                     (excludedCount > 0 ? ", " + excludedCount + " excluded" : ""));
             }
+
+            // Log results
+            audit.addResult("messagesPublished", successCount)
+                 .addResult("messagesExcluded", excludedCount)
+                 .addResult("errors", errorCount)
+                 .addResult("filesProcessed", files.length);
+            audit.logCompletion(errorCount > 0 ? 1 : 0);
             return errorCount > 0 ? 1 : 0;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+            audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         } finally {
             if (producer != null) {

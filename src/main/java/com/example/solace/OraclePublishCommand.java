@@ -14,6 +14,8 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.concurrent.Callable;
 
+import static com.example.solace.AuditLogger.maskSensitive;
+
 @Command(
     name = "oracle-publish",
     aliases = {"ora-pub"},
@@ -27,6 +29,9 @@ public class OraclePublishCommand implements Callable<Integer> {
 
     @Mixin
     OracleOptions oracleConnection;
+
+    @Mixin
+    AuditOptions auditOptions;
 
     @Option(names = {"--sql", "-s"},
             description = "SQL SELECT statement to execute (use --sql-file for multiline queries)")
@@ -78,11 +83,30 @@ public class OraclePublishCommand implements Callable<Integer> {
         Connection dbConnection = null;
         JCSMPSession solaceSession = null;
         XMLMessageProducer producer = null;
+        AuditLogger audit = AuditLogger.create(auditOptions, "oracle-publish");
+
+        // Log parameters (mask sensitive values)
+        audit.addParameter("solaceHost", solaceConnection.host)
+             .addParameter("solaceVpn", solaceConnection.vpn)
+             .addParameter("solaceUsername", solaceConnection.username)
+             .addParameter("solacePassword", maskSensitive(solaceConnection.password))
+             .addParameter("solaceQueue", solaceConnection.queue)
+             .addParameter("oracleJdbcUrl", oracleConnection.getJdbcUrl())
+             .addParameter("oracleUser", oracleConnection.dbUser)
+             .addParameter("oraclePassword", maskSensitive(oracleConnection.dbPassword))
+             .addParameter("sqlFile", sqlFile != null ? sqlFile.getAbsolutePath() : null)
+             .addParameter("messageColumn", messageColumn)
+             .addParameter("correlationColumn", correlationColumn)
+             .addParameter("deliveryMode", deliveryMode)
+             .addParameter("ttl", ttl)
+             .addParameter("dryRun", dryRun)
+             .addParameter("secondQueue", secondQueue);
 
         try {
             // Resolve SQL query from --sql or --sql-file
             String effectiveSql = resolveSqlQuery();
             if (effectiveSql == null) {
+                audit.setError("Failed to resolve SQL query").logCompletion(1);
                 return 1;
             }
 
@@ -90,6 +114,7 @@ public class OraclePublishCommand implements Callable<Integer> {
             if (excludeFile != null) {
                 if (!excludeFile.exists()) {
                     System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    audit.setError("Exclude file not found").logCompletion(1);
                     return 1;
                 }
                 exclusionList = ExclusionList.fromFile(excludeFile);
@@ -215,11 +240,19 @@ public class OraclePublishCommand implements Callable<Integer> {
                 }
             }
 
+            // Log success results
+            audit.addResult("rowsQueried", messageCount + excludedCount)
+                 .addResult("messagesPublished", dryRun ? 0 : messageCount)
+                 .addResult("messagesExcluded", excludedCount)
+                 .addResult("dryRun", dryRun)
+                 .addResult("queuesUsed", (secondQueue != null && !dryRun) ? 2 : 1);
+            audit.logCompletion(0);
             return 0;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+            audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         } finally {
             if (producer != null) {

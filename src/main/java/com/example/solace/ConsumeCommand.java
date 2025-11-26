@@ -15,6 +15,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.example.solace.AuditLogger.maskSensitive;
+
 @Command(
     name = "consume",
     aliases = {"sub", "receive"},
@@ -25,6 +27,9 @@ public class ConsumeCommand implements Callable<Integer> {
 
     @Mixin
     ConnectionOptions connection;
+
+    @Mixin
+    AuditOptions auditOptions;
 
     @Option(names = {"-n", "--count"},
             description = "Number of messages to consume (0 = unlimited)",
@@ -83,12 +88,27 @@ public class ConsumeCommand implements Callable<Integer> {
     private volatile boolean running = true;
     private CountDownLatch completionLatch;
     private ExclusionList exclusionList;
+    private AuditLogger audit;
 
     @Override
     public Integer call() {
         JCSMPSession session = null;
         FlowReceiver flowReceiver = null;
         Browser browser = null;
+        audit = AuditLogger.create(auditOptions, "consume");
+
+        // Log parameters (mask sensitive values)
+        audit.addParameter("host", connection.host)
+             .addParameter("vpn", connection.vpn)
+             .addParameter("username", connection.username)
+             .addParameter("password", maskSensitive(connection.password))
+             .addParameter("queue", connection.queue)
+             .addParameter("maxMessages", maxMessages)
+             .addParameter("timeout", timeout)
+             .addParameter("browseOnly", browseOnly)
+             .addParameter("noAck", noAck)
+             .addParameter("outputDir", outputDir != null ? outputDir.getAbsolutePath() : null)
+             .addParameter("excludeFile", excludeFile != null ? excludeFile.getAbsolutePath() : null);
 
         try {
             // Validate and create output directory if specified
@@ -97,11 +117,13 @@ public class ConsumeCommand implements Callable<Integer> {
                     System.out.println("Creating output directory: " + outputDir.getAbsolutePath());
                     if (!outputDir.mkdirs()) {
                         System.err.println("Error: Failed to create output directory: " + outputDir.getAbsolutePath());
+                        audit.setError("Failed to create output directory").logCompletion(1);
                         return 1;
                     }
                 }
                 if (!outputDir.isDirectory()) {
                     System.err.println("Error: Output path is not a directory: " + outputDir.getAbsolutePath());
+                    audit.setError("Output path is not a directory").logCompletion(1);
                     return 1;
                 }
             }
@@ -115,6 +137,7 @@ public class ConsumeCommand implements Callable<Integer> {
             if (excludeFile != null) {
                 if (!excludeFile.exists()) {
                     System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    audit.setError("Exclude file not found").logCompletion(1);
                     return 1;
                 }
                 exclusionList = ExclusionList.fromFile(excludeFile);
@@ -226,11 +249,18 @@ public class ConsumeCommand implements Callable<Integer> {
             if (excludedCount.get() > 0) {
                 System.out.println("Excluded " + excludedCount.get() + " message(s)");
             }
+
+            // Log success results
+            audit.addResult("messagesConsumed", messageCount.get())
+                 .addResult("messagesExcluded", excludedCount.get())
+                 .addResult("browseMode", false);
+            audit.logCompletion(0);
             return 0;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+            audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         } finally {
             if (flowReceiver != null) {
@@ -274,6 +304,12 @@ public class ConsumeCommand implements Callable<Integer> {
             System.out.println("Excluded " + excluded + " message(s)");
         }
         browser.close();
+
+        // Log success results for browse mode
+        audit.addResult("messagesBrowsed", count)
+             .addResult("messagesExcluded", excluded)
+             .addResult("browseMode", true);
+        audit.logCompletion(0);
         return 0;
     }
 
