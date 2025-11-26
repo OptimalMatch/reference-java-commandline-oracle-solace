@@ -378,6 +378,8 @@ graph LR
 - **Folder Publishing** - Batch publish messages from files in a directory
 - **Two-Step Workflow** - Export from Oracle to files, then publish to Solace
 - **Exclusion Lists** - Filter out unwanted messages or files using flexible pattern matching
+- **Audit Logging** - JSON-formatted audit trail of command execution with parameters and results
+- **Publish Recovery** - Save failed messages for later retry and track partial progress
 - Support for reading message content from stdin, file, or command line
 - Verbose output with message metadata
 - Write received messages to files
@@ -503,6 +505,9 @@ java -jar target/solace-cli-1.0.0.jar publish \
 | `--delivery-mode` | PERSISTENT (default) or DIRECT |
 | `--ttl` | Time to live in milliseconds |
 | `-Q, --second-queue` | Also publish to this second queue (fan-out) |
+| `--failed-dir` | Directory to save failed messages for later retry |
+| `--retry-dir` | Directory containing previously failed messages to retry |
+| `--audit-log` | File to write audit log entries (JSON format) |
 
 ### Fan-Out Publishing (Second Queue)
 
@@ -1237,6 +1242,251 @@ java -jar target/solace-cli-1.0.0.jar folder-publish \
   --exclude-file exclude.txt \
   --exclude-content
 ```
+
+---
+
+## Audit Logging
+
+Track command execution with JSON-formatted audit logs. Each command invocation appends a single-line JSON entry with parameters, results, timing, and status.
+
+### Enabling Audit Logging
+
+Add `--audit-log <file>` to any command:
+
+```bash
+# Publish with audit logging
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --audit-log /var/log/solace-cli/audit.log \
+  "Hello, Solace!"
+
+# Oracle publish with audit logging
+java -jar target/solace-cli-1.0.0.jar oracle-publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT message FROM outbox" \
+  --audit-log /var/log/solace-cli/audit.log
+```
+
+### Audit Log Format
+
+Each line is a complete JSON object (NDJSON format):
+
+```json
+{
+  "timestamp": "2025-01-15T10:30:00Z",
+  "command": "publish",
+  "parameters": {
+    "host": "tcp://localhost:55555",
+    "vpn": "default",
+    "username": "admin",
+    "password": "****",
+    "queue": "my-queue",
+    "count": 10
+  },
+  "results": {
+    "messagesPublished": 10,
+    "messagesFailed": 0
+  },
+  "startTime": "2025-01-15T10:30:00Z",
+  "endTime": "2025-01-15T10:30:01Z",
+  "durationMs": 1234,
+  "exitCode": 0,
+  "success": true
+}
+```
+
+### Audit Log Fields
+
+| Field | Description |
+|-------|-------------|
+| `timestamp` | When the command started (ISO 8601) |
+| `command` | Command name (publish, consume, oracle-publish, etc.) |
+| `parameters` | Input parameters (passwords masked as `****`) |
+| `results` | Command-specific output metrics |
+| `startTime` | Execution start time |
+| `endTime` | Execution end time |
+| `durationMs` | Total execution time in milliseconds |
+| `exitCode` | Process exit code (0 = success) |
+| `success` | Boolean success indicator |
+| `error` | Error message (if failed) |
+
+### Commands Supporting Audit Logging
+
+All commands support the `--audit-log` option:
+- `publish` / `pub`
+- `consume` / `sub`
+- `oracle-publish` / `ora-pub`
+- `oracle-export` / `ora-exp`
+- `oracle-insert` / `ora-ins`
+- `folder-publish` / `dir-pub`
+- `copy-queue` / `cp`
+- `perf-test` / `benchmark`
+
+---
+
+## Publish Recovery
+
+Handle publish failures gracefully with automatic message persistence and retry capabilities.
+
+### Failed Message Directory (`--failed-dir`)
+
+Save messages that fail to publish for later retry:
+
+```bash
+# Publish with failure persistence
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --failed-dir /data/failed-messages \
+  -c 100 \
+  "Test message"
+
+# Folder publish with failure persistence
+java -jar target/solace-cli-1.0.0.jar folder-publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --folder /data/messages \
+  --failed-dir /data/failed-messages
+
+# Oracle publish with failure persistence
+java -jar target/solace-cli-1.0.0.jar oracle-publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT message FROM outbox" \
+  --failed-dir /data/failed-messages
+```
+
+### Failed Message Files
+
+Each failed message creates two files in the failed directory:
+
+**Message file** (`{timestamp}_{correlationId}_{index}.msg`):
+```
+Original message content here
+```
+
+**Metadata file** (`{timestamp}_{correlationId}_{index}.meta`):
+```json
+{
+  "timestamp": "2025-01-15T10:30:00Z",
+  "queue": "my-queue",
+  "correlationId": "order-123",
+  "index": 1,
+  "error": "Connection refused",
+  "contentFile": "20250115_103000_000_order-123_1.msg"
+}
+```
+
+### Retry Directory (`--retry-dir`)
+
+Retry previously failed messages from a directory:
+
+```bash
+# Retry failed messages
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --retry-dir /data/failed-messages
+
+# Retry with a different failed directory for new failures
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q my-queue \
+  --retry-dir /data/failed-messages \
+  --failed-dir /data/retry-failures
+```
+
+When retry succeeds, the `.msg` and `.meta` files are automatically deleted. Failed retries remain in the directory for subsequent attempts.
+
+### Recovery Workflow Example
+
+```bash
+# Step 1: Attempt initial publish (some may fail)
+java -jar target/solace-cli-1.0.0.jar folder-publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q orders.inbound \
+  --folder /data/orders \
+  --failed-dir /data/failed/orders \
+  --audit-log /var/log/solace-cli/audit.log
+
+# Output: Published 95, Failed 5
+# Failed messages saved to /data/failed/orders
+
+# Step 2: Fix connectivity issue, then retry
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q orders.inbound \
+  --retry-dir /data/failed/orders \
+  --audit-log /var/log/solace-cli/audit.log
+
+# Output: Retried 5, Succeeded 5
+# All files in /data/failed/orders removed
+```
+
+### Audit Log with Recovery Information
+
+When using `--failed-dir`, the audit log includes recovery details:
+
+```json
+{
+  "command": "publish",
+  "results": {
+    "messagesPublished": 95,
+    "messagesFailed": 5,
+    "failedMessageIds": ["order-101", "order-102", "order-103", "order-104", "order-105"],
+    "failedMessagesSaved": 5,
+    "failedDir": "/data/failed/orders"
+  },
+  "error": "5 message(s) failed to publish",
+  "exitCode": 1,
+  "success": false
+}
+```
+
+### Commands Supporting Recovery
+
+| Command | `--failed-dir` | `--retry-dir` |
+|---------|----------------|---------------|
+| `publish` | Yes | Yes |
+| `folder-publish` | Yes | No |
+| `oracle-publish` | Yes | No |
 
 ---
 
