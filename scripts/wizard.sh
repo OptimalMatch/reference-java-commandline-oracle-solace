@@ -7,8 +7,6 @@
 # Usage: ./wizard.sh
 # =============================================================================
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
@@ -23,6 +21,20 @@ WIZARD_SOLACE_QUEUE=""
 WIZARD_CONNECTED=false
 
 # -----------------------------------------------------------------------------
+# Color Functions (use printf for portability)
+# -----------------------------------------------------------------------------
+
+color_blue() { printf '\033[0;34m%s\033[0m' "$1"; }
+color_green() { printf '\033[0;32m%s\033[0m' "$1"; }
+color_yellow() { printf '\033[1;33m%s\033[0m' "$1"; }
+color_red() { printf '\033[0;31m%s\033[0m' "$1"; }
+
+println_blue() { printf '\033[0;34m%s\033[0m\n' "$1"; }
+println_green() { printf '\033[0;32m%s\033[0m\n' "$1"; }
+println_yellow() { printf '\033[1;33m%s\033[0m\n' "$1"; }
+println_red() { printf '\033[0;31m%s\033[0m\n' "$1"; }
+
+# -----------------------------------------------------------------------------
 # UI Helpers
 # -----------------------------------------------------------------------------
 
@@ -31,26 +43,23 @@ clear_screen() {
 }
 
 print_banner() {
-    echo -e "${BLUE}"
-    cat << 'EOF'
-  ____        _                   ____ _     ___
- / ___|  ___ | | __ _  ___ ___   / ___| |   |_ _|
- \___ \ / _ \| |/ _` |/ __/ _ \ | |   | |    | |
-  ___) | (_) | | (_| | (_|  __/ | |___| |___ | |
- |____/ \___/|_|\__,_|\___\___|  \____|_____|___|
-
-EOF
-    echo -e "${NC}"
-    echo -e "${GREEN}Interactive Wizard${NC}"
+    println_blue ""
+    println_blue "  ____        _                   ____ _     ___"
+    println_blue " / ___|  ___ | | __ _  ___ ___   / ___| |   |_ _|"
+    println_blue " \\___ \\ / _ \\| |/ _\` |/ __/ _ \\ | |   | |    | |"
+    println_blue "  ___) | (_) | | (_| | (_|  __/ | |___| |___ | |"
+    println_blue " |____/ \\___/|_|\\__,_|\\___|\\___| \\____|_____|___|"
+    println_blue ""
+    println_green "Interactive Wizard"
     echo "=============================================="
     echo ""
 }
 
 print_menu_header() {
     echo ""
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${YELLOW}  $1${NC}"
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    println_yellow "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    println_yellow "  $1"
+    println_yellow "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 }
 
@@ -115,7 +124,7 @@ select_option() {
         if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#options[@]} )); then
             return $((selection - 1))
         fi
-        echo -e "${RED}Invalid selection. Please try again.${NC}"
+        println_red "Invalid selection. Please try again."
     done
 }
 
@@ -126,9 +135,9 @@ wait_for_key() {
 
 show_connection_status() {
     if [[ "$WIZARD_CONNECTED" == "true" ]]; then
-        echo -e "${GREEN}●${NC} Connected to: ${WIZARD_SOLACE_HOST} (VPN: ${WIZARD_SOLACE_VPN})"
+        printf '\033[0;32m●\033[0m Connected to: %s (VPN: %s)\n' "$WIZARD_SOLACE_HOST" "$WIZARD_SOLACE_VPN"
     else
-        echo -e "${RED}●${NC} Not connected"
+        printf '\033[0;31m●\033[0m Not connected\n'
     fi
 }
 
@@ -159,20 +168,16 @@ setup_connection() {
         -p "$WIZARD_SOLACE_PASS" \
         -q "$WIZARD_SOLACE_QUEUE" \
         --browse -n 0 -t 2 2>/dev/null; then
-        echo -e "${GREEN}✓ Connection successful!${NC}"
+        println_green "✓ Connection successful!"
         WIZARD_CONNECTED=true
     else
-        echo -e "${YELLOW}⚠ Could not verify connection (queue may not exist yet)${NC}"
+        println_yellow "⚠ Could not verify connection (queue may not exist yet)"
         if prompt_yes_no "Continue anyway?"; then
             WIZARD_CONNECTED=true
         fi
     fi
 
     wait_for_key
-}
-
-get_connection_args() {
-    echo "-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $WIZARD_SOLACE_QUEUE"
 }
 
 # -----------------------------------------------------------------------------
@@ -206,7 +211,7 @@ wizard_publish() {
         1)
             prompt message_file "File path" ""
             if [[ ! -f "$message_file" ]]; then
-                echo -e "${RED}File not found: $message_file${NC}"
+                println_red "File not found: $message_file"
                 wait_for_key
                 return
             fi
@@ -220,7 +225,7 @@ wizard_publish() {
     # Optional settings
     echo ""
     local correlation_id=""
-    local ttl=""
+    local ttl="0"
     local delivery_mode="PERSISTENT"
     local second_queue=""
     local audit_log=""
@@ -236,12 +241,11 @@ wizard_publish() {
         prompt audit_log "Audit log file (optional)" ""
     fi
 
-    # Build command
+    # Build command display
     echo ""
-    echo -e "${YELLOW}Executing:${NC}"
+    println_yellow "Executing:"
 
     local cmd="solace-cli publish -H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p **** -q $queue"
-
     [[ -n "$message_file" ]] && cmd="$cmd -f $message_file"
     [[ $message_count -gt 1 ]] && cmd="$cmd -c $message_count"
     [[ -n "$correlation_id" ]] && cmd="$cmd --correlation-id $correlation_id"
@@ -253,9 +257,8 @@ wizard_publish() {
     echo "$cmd"
     echo ""
 
-    # Execute
+    # Execute command
     local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
-
     [[ -n "$message_file" ]] && args="$args -f $message_file"
     [[ $message_count -gt 1 ]] && args="$args -c $message_count"
     [[ -n "$correlation_id" ]] && args="$args --correlation-id $correlation_id"
@@ -316,7 +319,7 @@ wizard_consume() {
 
     # Build and execute command
     echo ""
-    echo -e "${YELLOW}Executing:${NC}"
+    println_yellow "Executing:"
 
     local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
     args="$args -n $count -t $timeout"
@@ -327,7 +330,7 @@ wizard_consume() {
     [[ -n "$output_dir" ]] && args="$args -o $output_dir"
     [[ "$use_correlation" == "true" ]] && args="$args --use-correlation-id"
 
-    echo "solace-cli consume $args" | sed 's/-p [^ ]*/-p ****/g'
+    echo "solace-cli consume ... -q $queue -n $count -t $timeout"
     echo ""
 
     solace_cli consume $args
@@ -352,7 +355,7 @@ wizard_folder_publish() {
     prompt folder "Folder path" ""
 
     if [[ ! -d "$folder" ]]; then
-        echo -e "${RED}Directory not found: $folder${NC}"
+        println_red "Directory not found: $folder"
         wait_for_key
         return
     fi
@@ -367,7 +370,8 @@ wizard_folder_publish() {
     echo ""
     echo "Files matching pattern:"
     find "$folder" -maxdepth 1 -name "$pattern" -type f 2>/dev/null | head -10
-    local file_count=$(find "$folder" -maxdepth 1 -name "$pattern" -type f 2>/dev/null | wc -l)
+    local file_count
+    file_count=$(find "$folder" -maxdepth 1 -name "$pattern" -type f 2>/dev/null | wc -l)
     echo "Total: $file_count file(s)"
     echo ""
 
@@ -398,20 +402,20 @@ wizard_folder_publish() {
 
     # Build and execute
     echo ""
-    echo -e "${YELLOW}Executing:${NC}"
+    println_yellow "Executing:"
 
     local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
-    args="$args --pattern $pattern"
+    args="$args --pattern '$pattern'"
 
     [[ "$recursive" == "true" ]] && args="$args --recursive"
     [[ "$use_filename_correlation" == "true" ]] && args="$args --use-filename-as-correlation"
     [[ -n "$sort_by" ]] && args="$args --sort $sort_by"
     [[ "$dry_run" == "true" ]] && args="$args --dry-run"
 
-    echo "solace-cli folder-publish $args $folder" | sed 's/-p [^ ]*/-p ****/g'
+    echo "solace-cli folder-publish ... --pattern '$pattern' $folder"
     echo ""
 
-    solace_cli folder-publish $args "$folder"
+    eval "solace_cli folder-publish $args '$folder'"
 
     wait_for_key
 }
@@ -429,7 +433,7 @@ wizard_copy_queue() {
     prompt dest_queue "Destination queue" ""
 
     if [[ -z "$dest_queue" ]]; then
-        echo -e "${RED}Destination queue is required${NC}"
+        println_red "Destination queue is required"
         wait_for_key
         return
     fi
@@ -458,7 +462,7 @@ wizard_copy_queue() {
 
     # Build and execute
     echo ""
-    echo -e "${YELLOW}Executing:${NC}"
+    println_yellow "Executing:"
 
     local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS"
     args="$args -q $source_queue --dest $dest_queue"
@@ -468,7 +472,7 @@ wizard_copy_queue() {
     [[ "$preserve_props" == "true" ]] && args="$args --preserve-properties"
     [[ "$dry_run" == "true" ]] && args="$args --dry-run"
 
-    echo "solace-cli copy-queue $args" | sed 's/-p [^ ]*/-p ****/g'
+    echo "solace-cli copy-queue ... -q $source_queue --dest $dest_queue"
     echo ""
 
     solace_cli copy-queue $args
@@ -525,7 +529,7 @@ wizard_perf_test() {
 
     # Build and execute
     echo ""
-    echo -e "${YELLOW}Executing:${NC}"
+    println_yellow "Executing:"
 
     local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
     args="$args --mode $mode --count $count --size $size"
@@ -534,7 +538,7 @@ wizard_perf_test() {
     [[ -n "$rate" ]] && args="$args --rate $rate"
     [[ "$threads" != "1" ]] && args="$args --threads $threads"
 
-    echo "solace-cli perf-test $args" | sed 's/-p [^ ]*/-p ****/g'
+    echo "solace-cli perf-test ... --mode $mode --count $count --size $size"
     echo ""
 
     solace_cli perf-test $args
@@ -587,7 +591,7 @@ wizard_oracle_publish() {
     echo "Enter SQL query (single line):"
     read -r sql_query
 
-    prompt message_col "Message column name" ""
+    prompt message_col "Message column name (optional)" ""
     prompt correlation_col "Correlation ID column (optional)" ""
 
     local dry_run=false
@@ -597,29 +601,18 @@ wizard_oracle_publish() {
 
     # Build and execute
     echo ""
-    echo -e "${YELLOW}Executing:${NC}"
-
-    local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
-    args="$args --db-host $db_host --db-port $db_port --db-service $db_service --db-user $db_user --db-password ****"
-    args="$args --sql \"$sql_query\""
-
-    [[ -n "$message_col" ]] && args="$args --message-column $message_col"
-    [[ -n "$correlation_col" ]] && args="$args --correlation-column $correlation_col"
-    [[ "$dry_run" == "true" ]] && args="$args --dry-run"
-
-    echo "solace-cli oracle-publish $args"
+    println_yellow "Executing:"
+    echo "solace-cli oracle-publish ... --sql \"$sql_query\""
     echo ""
 
-    # Actual execution with real password
     local exec_args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
     exec_args="$exec_args --db-host $db_host --db-port $db_port --db-service $db_service --db-user $db_user --db-password $db_pass"
-    exec_args="$exec_args --sql \"$sql_query\""
 
     [[ -n "$message_col" ]] && exec_args="$exec_args --message-column $message_col"
     [[ -n "$correlation_col" ]] && exec_args="$exec_args --correlation-column $correlation_col"
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
 
-    eval "solace_cli oracle-publish $exec_args"
+    solace_cli oracle-publish $exec_args --sql "$sql_query"
 
     wait_for_key
 }
@@ -639,7 +632,7 @@ wizard_oracle_export() {
     echo "Enter SQL query (single line):"
     read -r sql_query
 
-    prompt message_col "Content column name" ""
+    prompt message_col "Content column name (optional)" ""
     prompt filename_col "Filename column (optional)" ""
     prompt extension "File extension" ".txt"
 
@@ -649,19 +642,18 @@ wizard_oracle_export() {
     fi
 
     echo ""
-    echo -e "${YELLOW}Executing:${NC}"
+    println_yellow "Executing:"
+    echo "solace-cli oracle-export ... --sql \"$sql_query\" -o $output_folder"
+    echo ""
 
     local exec_args="--db-host $db_host --db-port $db_port --db-service $db_service --db-user $db_user --db-password $db_pass"
-    exec_args="$exec_args --output-folder $output_folder --sql \"$sql_query\" --extension $extension"
+    exec_args="$exec_args --output-folder $output_folder --extension $extension"
 
     [[ -n "$message_col" ]] && exec_args="$exec_args --message-column $message_col"
     [[ -n "$filename_col" ]] && exec_args="$exec_args --filename-column $filename_col"
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
 
-    echo "solace-cli oracle-export $exec_args" | sed 's/--db-password [^ ]*/--db-password ****/g'
-    echo ""
-
-    eval "solace_cli oracle-export $exec_args"
+    solace_cli oracle-export $exec_args --sql "$sql_query"
 
     wait_for_key
 }
@@ -677,7 +669,7 @@ wizard_oracle_insert() {
     prompt folder "Source folder" ""
 
     if [[ ! -d "$folder" ]]; then
-        echo -e "${RED}Directory not found: $folder${NC}"
+        println_red "Directory not found: $folder"
         wait_for_key
         return
     fi
@@ -693,16 +685,15 @@ wizard_oracle_insert() {
     fi
 
     echo ""
-    echo -e "${YELLOW}Executing:${NC}"
+    println_yellow "Executing:"
+    echo "solace-cli oracle-insert ... --folder $folder --table $table"
+    echo ""
 
     local exec_args="--db-host $db_host --db-port $db_port --db-service $db_service --db-user $db_user --db-password $db_pass"
-    exec_args="$exec_args --folder $folder --pattern $pattern --table $table --content-column $content_col"
+    exec_args="$exec_args --folder $folder --pattern '$pattern' --table $table --content-column $content_col"
 
     [[ -n "$filename_col" ]] && exec_args="$exec_args --filename-column $filename_col"
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
-
-    echo "solace-cli oracle-insert $exec_args" | sed 's/--db-password [^ ]*/--db-password ****/g'
-    echo ""
 
     eval "solace_cli oracle-insert $exec_args"
 
@@ -754,33 +745,30 @@ show_help() {
 
     cat << 'EOF'
 COMMANDS OVERVIEW
-─────────────────
 
-publish         Publish messages to a Solace queue
-consume         Consume/browse messages from a queue
-folder-publish  Batch publish files from a directory
-copy-queue      Copy or move messages between queues
-perf-test       Run performance tests
-oracle-publish  Query Oracle → Publish to Solace
-oracle-export   Query Oracle → Save to files
-oracle-insert   Read files → Insert to Oracle
+  publish         Publish messages to a Solace queue
+  consume         Consume/browse messages from a queue
+  folder-publish  Batch publish files from a directory
+  copy-queue      Copy or move messages between queues
+  perf-test       Run performance tests
+  oracle-publish  Query Oracle -> Publish to Solace
+  oracle-export   Query Oracle -> Save to files
+  oracle-insert   Read files -> Insert to Oracle
 
 COMMON OPTIONS
-──────────────
 
--H, --host      Solace broker host (tcp://host:port)
--v, --vpn       Message VPN name
--u, --username  Authentication username
--p, --password  Authentication password
--q, --queue     Queue name
+  -H, --host      Solace broker host (tcp://host:port)
+  -v, --vpn       Message VPN name
+  -u, --username  Authentication username
+  -p, --password  Authentication password
+  -q, --queue     Queue name
 
 GETTING STARTED
-───────────────
 
-1. Setup connection using "Configure Connection"
-2. Create queues using "Queue Setup"
-3. Try publishing a message
-4. Try consuming messages
+  1. Setup connection using "Configure Connection"
+  2. Create queues using "Queue Setup"
+  3. Try publishing a message
+  4. Try consuming messages
 
 For more details, see the README.md file or run:
   java -jar solace-cli.jar --help
@@ -804,23 +792,23 @@ main_menu() {
         echo ""
         echo "What would you like to do?"
         echo ""
-        echo "  ${GREEN}Messages${NC}"
+        println_green "  Messages"
         echo "    1) Publish message"
         echo "    2) Consume messages"
         echo "    3) Folder publish (batch)"
         echo "    4) Copy/Move queue"
         echo ""
-        echo "  ${GREEN}Testing${NC}"
+        println_green "  Testing"
         echo "    5) Performance test"
         echo ""
-        echo "  ${GREEN}Oracle Integration${NC}"
+        println_green "  Oracle Integration"
         echo "    6) Oracle operations"
         echo ""
-        echo "  ${GREEN}Setup${NC}"
+        println_green "  Setup"
         echo "    7) Configure connection"
         echo "    8) Queue setup (SEMP)"
         echo ""
-        echo "  ${GREEN}Other${NC}"
+        println_green "  Other"
         echo "    9) Help"
         echo "    0) Exit"
         echo ""
@@ -832,37 +820,37 @@ main_menu() {
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
-                wizard_publish
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_publish
                 ;;
             2)
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
-                wizard_consume
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_consume
                 ;;
             3)
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
-                wizard_folder_publish
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_folder_publish
                 ;;
             4)
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
-                wizard_copy_queue
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_copy_queue
                 ;;
             5)
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
-                wizard_perf_test
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_perf_test
                 ;;
             6)
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
-                wizard_oracle
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_oracle
                 ;;
             7) setup_connection ;;
             8) wizard_setup_queues ;;
@@ -873,7 +861,7 @@ main_menu() {
                 exit 0
                 ;;
             *)
-                echo -e "${RED}Invalid choice${NC}"
+                println_red "Invalid choice"
                 sleep 1
                 ;;
         esac
@@ -887,7 +875,7 @@ main_menu() {
 check_jar
 
 # Check for arguments
-if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     echo "Solace CLI Interactive Wizard"
     echo ""
     echo "Usage: $0"
