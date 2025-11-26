@@ -18,6 +18,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Callable;
 
+import static com.example.solace.AuditLogger.maskSensitive;
+
 @Command(
     name = "oracle-insert",
     aliases = {"ora-insert", "ora-ins"},
@@ -28,6 +30,9 @@ public class OracleInsertCommand implements Callable<Integer> {
 
     @Mixin
     OracleOptions oracleConnection;
+
+    @Mixin
+    AuditOptions auditOptions;
 
     @Option(names = {"--folder", "-d"},
             description = "Source folder containing files to insert",
@@ -88,15 +93,31 @@ public class OracleInsertCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         Connection dbConnection = null;
+        AuditLogger audit = AuditLogger.create(auditOptions, "oracle-insert");
+
+        // Log parameters (mask sensitive values)
+        audit.addParameter("oracleJdbcUrl", oracleConnection.getJdbcUrl())
+             .addParameter("oracleUser", oracleConnection.dbUser)
+             .addParameter("oraclePassword", maskSensitive(oracleConnection.dbPassword))
+             .addParameter("sourceFolder", sourceFolder != null ? sourceFolder.getAbsolutePath() : null)
+             .addParameter("filePattern", filePattern)
+             .addParameter("recursive", recursive)
+             .addParameter("tableName", tableName)
+             .addParameter("contentColumn", contentColumn)
+             .addParameter("filenameColumn", filenameColumn)
+             .addParameter("batchSize", batchSize)
+             .addParameter("dryRun", dryRun);
 
         try {
             // Validate source folder
             if (!sourceFolder.exists()) {
                 System.err.println("Error: Source folder does not exist: " + sourceFolder.getAbsolutePath());
+                audit.setError("Source folder does not exist").logCompletion(1);
                 return 1;
             }
             if (!sourceFolder.isDirectory()) {
                 System.err.println("Error: Source path is not a directory: " + sourceFolder.getAbsolutePath());
+                audit.setError("Source path is not a directory").logCompletion(1);
                 return 1;
             }
 
@@ -104,6 +125,7 @@ public class OracleInsertCommand implements Callable<Integer> {
             if (excludeFile != null) {
                 if (!excludeFile.exists()) {
                     System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    audit.setError("Exclude file not found").logCompletion(1);
                     return 1;
                 }
                 exclusionList = ExclusionList.fromFile(excludeFile);
@@ -113,6 +135,7 @@ public class OracleInsertCommand implements Callable<Integer> {
             // Validate table or SQL file
             String insertSql = resolveInsertStatement();
             if (insertSql == null) {
+                audit.setError("Failed to resolve insert statement").logCompletion(1);
                 return 1;
             }
 
@@ -252,6 +275,12 @@ public class OracleInsertCommand implements Callable<Integer> {
             }
             System.out.println("  Target table: " + (tableName != null ? tableName : "(custom SQL)"));
 
+            // Log results
+            audit.addResult("recordsInserted", insertCount)
+                 .addResult("recordsExcluded", excludedCount)
+                 .addResult("errors", errorCount)
+                 .addResult("dryRun", dryRun);
+            audit.logCompletion(errorCount > 0 ? 1 : 0);
             return errorCount > 0 ? 1 : 0;
 
         } catch (Exception e) {
@@ -264,6 +293,7 @@ public class OracleInsertCommand implements Callable<Integer> {
                     // Ignore rollback errors
                 }
             }
+            audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         } finally {
             if (dbConnection != null) {

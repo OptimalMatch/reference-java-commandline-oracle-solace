@@ -11,6 +11,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static com.example.solace.AuditLogger.maskSensitive;
+
 @Command(
     name = "copy-queue",
     aliases = {"copy", "cp"},
@@ -21,6 +23,9 @@ public class CopyQueueCommand implements Callable<Integer> {
 
     @Mixin
     ConnectionOptions connection;
+
+    @Mixin
+    AuditOptions auditOptions;
 
     @Option(names = {"--dest", "-d"},
             description = "Destination queue name",
@@ -69,12 +74,27 @@ public class CopyQueueCommand implements Callable<Integer> {
         JCSMPSession session = null;
         XMLMessageProducer producer = null;
         FlowReceiver consumer = null;
+        AuditLogger audit = AuditLogger.create(auditOptions, "copy-queue");
+
+        // Log parameters (mask sensitive values)
+        audit.addParameter("host", connection.host)
+             .addParameter("vpn", connection.vpn)
+             .addParameter("username", connection.username)
+             .addParameter("password", maskSensitive(connection.password))
+             .addParameter("sourceQueue", connection.queue)
+             .addParameter("destinationQueue", destinationQueue)
+             .addParameter("maxCount", maxCount)
+             .addParameter("timeout", timeout)
+             .addParameter("moveMessages", moveMessages)
+             .addParameter("preserveProperties", preserveProperties)
+             .addParameter("dryRun", dryRun);
 
         try {
             // Load exclusion list if specified
             if (excludeFile != null) {
                 if (!excludeFile.exists()) {
                     System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    audit.setError("Exclude file not found").logCompletion(1);
                     return 1;
                 }
                 exclusionList = ExclusionList.fromFile(excludeFile);
@@ -278,11 +298,18 @@ public class CopyQueueCommand implements Callable<Integer> {
                 }
             }
 
+            // Log results
+            audit.addResult("messagesCopied", copied)
+                 .addResult("messagesExcluded", excluded)
+                 .addResult("moveMode", moveMessages)
+                 .addResult("dryRun", dryRun);
+            audit.logCompletion(0);
             return 0;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+            audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         } finally {
             if (consumer != null) {

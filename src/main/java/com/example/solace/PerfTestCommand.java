@@ -17,6 +17,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.example.solace.AuditLogger.maskSensitive;
+
 @Command(
     name = "perf-test",
     aliases = {"perf", "benchmark"},
@@ -27,6 +29,9 @@ public class PerfTestCommand implements Callable<Integer> {
 
     @Mixin
     ConnectionOptions connection;
+
+    @Mixin
+    AuditOptions auditOptions;
 
     @Option(names = {"--mode", "-m"},
             description = "Test mode: publish, consume, or both (default: publish)",
@@ -107,6 +112,21 @@ public class PerfTestCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        AuditLogger audit = AuditLogger.create(auditOptions, "perf-test");
+
+        // Log parameters (mask sensitive values)
+        audit.addParameter("host", connection.host)
+             .addParameter("vpn", connection.vpn)
+             .addParameter("username", connection.username)
+             .addParameter("password", maskSensitive(connection.password))
+             .addParameter("queue", connection.queue)
+             .addParameter("mode", mode)
+             .addParameter("messageCount", messageCount)
+             .addParameter("messageSize", messageSize)
+             .addParameter("targetRate", targetRate)
+             .addParameter("threadCount", threadCount)
+             .addParameter("deliveryMode", deliveryMode);
+
         System.out.println(repeatChar('=', 60));
         System.out.println("Solace Performance Test");
         System.out.println(repeatChar('=', 60));
@@ -119,6 +139,7 @@ public class PerfTestCommand implements Callable<Integer> {
             if (excludeFile != null) {
                 if (!excludeFile.exists()) {
                     System.err.println("Error: Exclude file not found: " + excludeFile.getAbsolutePath());
+                    audit.setError("Exclude file not found").logCompletion(1);
                     return 1;
                 }
                 exclusionList = ExclusionList.fromFile(excludeFile);
@@ -127,21 +148,37 @@ public class PerfTestCommand implements Callable<Integer> {
                 System.out.println();
             }
 
+            int result;
             switch (mode.toLowerCase()) {
                 case "publish":
-                    return runPublishTest();
+                    result = runPublishTest();
+                    break;
                 case "consume":
-                    return runConsumeTest();
+                    result = runConsumeTest();
+                    break;
                 case "both":
-                    return runBidirectionalTest();
+                    result = runBidirectionalTest();
+                    break;
                 default:
                     System.err.println("Unknown mode: " + mode);
                     System.err.println("Valid modes: publish, consume, both");
+                    audit.setError("Unknown mode: " + mode).logCompletion(1);
                     return 1;
             }
+
+            // Log results
+            long durationMs = (testEndTime - testStartTime) / 1_000_000;
+            audit.addResult("messagesSent", sentCount.get())
+                 .addResult("messagesReceived", receivedCount.get())
+                 .addResult("messagesExcluded", excludedCount.get())
+                 .addResult("errors", errorCount.get())
+                 .addResult("durationMs", durationMs);
+            audit.logCompletion(result);
+            return result;
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+            audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         }
     }

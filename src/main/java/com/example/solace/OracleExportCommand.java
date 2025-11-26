@@ -16,6 +16,8 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.concurrent.Callable;
 
+import static com.example.solace.AuditLogger.maskSensitive;
+
 @Command(
     name = "oracle-export",
     aliases = {"ora-export", "ora-exp"},
@@ -26,6 +28,9 @@ public class OracleExportCommand implements Callable<Integer> {
 
     @Mixin
     OracleOptions oracleConnection;
+
+    @Mixin
+    AuditOptions auditOptions;
 
     @Option(names = {"--sql", "-s"},
             description = "SQL SELECT statement to execute (use --sql-file for multiline queries)")
@@ -70,11 +75,25 @@ public class OracleExportCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         Connection dbConnection = null;
+        AuditLogger audit = AuditLogger.create(auditOptions, "oracle-export");
+
+        // Log parameters (mask sensitive values)
+        audit.addParameter("oracleJdbcUrl", oracleConnection.getJdbcUrl())
+             .addParameter("oracleUser", oracleConnection.dbUser)
+             .addParameter("oraclePassword", maskSensitive(oracleConnection.dbPassword))
+             .addParameter("sqlFile", sqlFile != null ? sqlFile.getAbsolutePath() : null)
+             .addParameter("messageColumn", messageColumn)
+             .addParameter("filenameColumn", filenameColumn)
+             .addParameter("outputFolder", outputFolder != null ? outputFolder.getAbsolutePath() : null)
+             .addParameter("fileExtension", fileExtension)
+             .addParameter("overwrite", overwrite)
+             .addParameter("dryRun", dryRun);
 
         try {
             // Resolve SQL query from --sql or --sql-file
             String effectiveSql = resolveSqlQuery();
             if (effectiveSql == null) {
+                audit.setError("Failed to resolve SQL query").logCompletion(1);
                 return 1;
             }
 
@@ -84,11 +103,13 @@ public class OracleExportCommand implements Callable<Integer> {
                     System.out.println("Creating output folder: " + outputFolder.getAbsolutePath());
                     if (!outputFolder.mkdirs()) {
                         System.err.println("Error: Failed to create output folder: " + outputFolder.getAbsolutePath());
+                        audit.setError("Failed to create output folder").logCompletion(1);
                         return 1;
                     }
                 }
                 if (!outputFolder.isDirectory()) {
                     System.err.println("Error: Output path is not a directory: " + outputFolder.getAbsolutePath());
+                    audit.setError("Output path is not a directory").logCompletion(1);
                     return 1;
                 }
             }
@@ -201,11 +222,17 @@ public class OracleExportCommand implements Callable<Integer> {
                 }
             }
 
+            // Log success results
+            audit.addResult("filesExported", fileCount)
+                 .addResult("filesSkipped", skippedCount)
+                 .addResult("dryRun", dryRun);
+            audit.logCompletion(0);
             return 0;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+            audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         } finally {
             if (dbConnection != null) {

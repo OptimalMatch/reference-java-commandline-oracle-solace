@@ -12,6 +12,8 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Callable;
 
+import static com.example.solace.AuditLogger.maskSensitive;
+
 @Command(
     name = "publish",
     aliases = {"pub", "send"},
@@ -22,6 +24,9 @@ public class PublishCommand implements Callable<Integer> {
 
     @Mixin
     ConnectionOptions connection;
+
+    @Mixin
+    AuditOptions auditOptions;
 
     @Parameters(index = "0", arity = "0..1",
             description = "Message content (reads from stdin if not provided)")
@@ -58,11 +63,27 @@ public class PublishCommand implements Callable<Integer> {
     public Integer call() {
         JCSMPSession session = null;
         XMLMessageProducer producer = null;
+        AuditLogger audit = AuditLogger.create(auditOptions, "publish");
+
+        // Log parameters (mask sensitive values)
+        audit.addParameter("host", connection.host)
+             .addParameter("vpn", connection.vpn)
+             .addParameter("username", connection.username)
+             .addParameter("password", maskSensitive(connection.password))
+             .addParameter("queue", connection.queue)
+             .addParameter("count", count)
+             .addParameter("deliveryMode", deliveryMode)
+             .addParameter("ttl", ttl)
+             .addParameter("inputFile", inputFile)
+             .addParameter("secondQueue", secondQueue)
+             .addParameter("correlationId", correlationId);
 
         try {
             String content = resolveMessageContent();
             if (content == null || content.isEmpty()) {
                 System.err.println("Error: No message content provided");
+                audit.setError("No message content provided");
+                audit.logCompletion(1);
                 return 1;
             }
 
@@ -139,11 +160,19 @@ public class PublishCommand implements Callable<Integer> {
                 String queueInfo = (queue2 != null) ? " to 2 queues" : "";
                 System.out.println("Successfully published " + totalMessages + " message(s)" + queueInfo);
             }
+
+            // Log success results
+            int totalMessages = (queue2 != null) ? count * 2 : count;
+            audit.addResult("messagesPublished", totalMessages)
+                 .addResult("queuesUsed", (queue2 != null) ? 2 : 1);
+            audit.logCompletion(0);
             return 0;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+            audit.setError(e.getMessage());
+            audit.logCompletion(1);
             return 1;
         } finally {
             if (producer != null) {
