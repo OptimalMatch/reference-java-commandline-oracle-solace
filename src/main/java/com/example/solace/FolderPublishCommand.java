@@ -10,8 +10,10 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.FileReader;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import static com.example.solace.AuditLogger.maskSensitive;
@@ -82,6 +84,10 @@ public class FolderPublishCommand implements Callable<Integer> {
             description = "Also exclude files whose content matches patterns in exclude file")
     boolean excludeByContent;
 
+    @Option(names = {"--failed-dir"},
+            description = "Directory to save failed messages for later retry")
+    File failedDir;
+
     private ExclusionList exclusionList;
 
     @Override
@@ -89,6 +95,8 @@ public class FolderPublishCommand implements Callable<Integer> {
         JCSMPSession session = null;
         XMLMessageProducer producer = null;
         AuditLogger audit = AuditLogger.create(auditOptions, "folder-publish");
+        FailedMessageHandler failedHandler = new FailedMessageHandler(failedDir, null);
+        List<String> failedMessageIds = new ArrayList<>();
 
         // Log parameters (mask sensitive values)
         audit.addParameter("host", connection.host)
@@ -101,9 +109,17 @@ public class FolderPublishCommand implements Callable<Integer> {
              .addParameter("recursive", recursive)
              .addParameter("deliveryMode", deliveryMode)
              .addParameter("dryRun", dryRun)
-             .addParameter("secondQueue", secondQueue);
+             .addParameter("secondQueue", secondQueue)
+             .addParameter("failedDir", failedDir != null ? failedDir.getAbsolutePath() : null);
 
         try {
+            // Initialize failed message directory if specified
+            if (!failedHandler.initFailedDir()) {
+                audit.setError("Failed to initialize failed message directory");
+                audit.logCompletion(1);
+                return 1;
+            }
+
             File folder = new File(folderPath);
             if (!folder.exists()) {
                 System.err.println("Error: Folder does not exist: " + folderPath);
@@ -186,6 +202,9 @@ public class FolderPublishCommand implements Callable<Integer> {
             }
 
             for (File file : files) {
+                String content = null;
+                String msgCorrelationId = null;
+
                 try {
                     // Check filename exclusion
                     if (shouldExcludeFile(file.getName())) {
@@ -196,7 +215,7 @@ public class FolderPublishCommand implements Callable<Integer> {
                         continue;
                     }
 
-                    String content = readFile(file);
+                    content = readFile(file);
 
                     // Check content exclusion
                     if (excludeByContent && exclusionList != null && exclusionList.containsExcluded(content)) {
@@ -212,7 +231,7 @@ public class FolderPublishCommand implements Callable<Integer> {
                     msg.setDeliveryMode(mode);
 
                     // Set correlation ID
-                    String msgCorrelationId = correlationId;
+                    msgCorrelationId = correlationId;
                     if (useFilenameAsCorrelation) {
                         msgCorrelationId = getFilenameWithoutExtension(file);
                     }
@@ -244,10 +263,19 @@ public class FolderPublishCommand implements Callable<Integer> {
 
                 } catch (Exception e) {
                     errorCount++;
+                    String msgId = msgCorrelationId != null ? msgCorrelationId : file.getName();
+                    failedMessageIds.add(msgId);
+
                     if (showProgress) {
                         progress.incrementError();
                     } else {
                         System.err.println("Failed to publish " + file.getName() + ": " + e.getMessage());
+                    }
+
+                    // Save failed message if directory specified (content may be null if error during read)
+                    if (content != null) {
+                        failedHandler.saveFailedMessage(content, msgCorrelationId, connection.queue,
+                            e.getMessage(), errorCount);
                     }
                 }
             }
@@ -263,17 +291,38 @@ public class FolderPublishCommand implements Callable<Integer> {
                     (excludedCount > 0 ? ", " + excludedCount + " excluded" : ""));
             }
 
-            // Log results
+            if (errorCount > 0 && failedHandler.isSaveEnabled()) {
+                System.out.println("Failed messages saved to: " + failedDir.getAbsolutePath());
+            }
+
+            // Log results with partial progress and failed message IDs
             audit.addResult("messagesPublished", successCount)
                  .addResult("messagesExcluded", excludedCount)
-                 .addResult("errors", errorCount)
+                 .addResult("messagesFailed", errorCount)
                  .addResult("filesProcessed", files.length);
+
+            if (!failedMessageIds.isEmpty()) {
+                audit.addResult("failedMessageIds", failedMessageIds);
+            }
+            if (failedHandler.isSaveEnabled() && failedHandler.getSavedCount() > 0) {
+                audit.addResult("failedMessagesSaved", failedHandler.getSavedCount());
+                audit.addResult("failedDir", failedDir.getAbsolutePath());
+            }
+
+            if (errorCount > 0) {
+                audit.setError(errorCount + " message(s) failed to publish");
+            }
             audit.logCompletion(errorCount > 0 ? 1 : 0);
             return errorCount > 0 ? 1 : 0;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+
+            // Log partial progress even on exception
+            if (!failedMessageIds.isEmpty()) {
+                audit.addResult("failedMessageIds", failedMessageIds);
+            }
             audit.setError(e.getMessage()).logCompletion(1);
             return 1;
         } finally {

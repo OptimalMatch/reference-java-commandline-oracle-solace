@@ -7,9 +7,12 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import static com.example.solace.AuditLogger.maskSensitive;
@@ -59,11 +62,27 @@ public class PublishCommand implements Callable<Integer> {
             description = "Also publish to this second queue (fan-out)")
     String secondQueue;
 
+    @Option(names = {"--failed-dir"},
+            description = "Directory to save failed messages for later retry")
+    File failedDir;
+
+    @Option(names = {"--retry-dir"},
+            description = "Directory containing previously failed messages to retry")
+    File retryDir;
+
     @Override
     public Integer call() {
         JCSMPSession session = null;
         XMLMessageProducer producer = null;
         AuditLogger audit = AuditLogger.create(auditOptions, "publish");
+        FailedMessageHandler failedHandler = new FailedMessageHandler(failedDir, retryDir);
+
+        // Track progress for partial failure reporting
+        int successCount = 0;
+        int failedCount = 0;
+        int retryCount = 0;
+        int retrySuccessCount = 0;
+        List<String> failedMessageIds = new ArrayList<>();
 
         // Log parameters (mask sensitive values)
         audit.addParameter("host", connection.host)
@@ -76,12 +95,38 @@ public class PublishCommand implements Callable<Integer> {
              .addParameter("ttl", ttl)
              .addParameter("inputFile", inputFile)
              .addParameter("secondQueue", secondQueue)
-             .addParameter("correlationId", correlationId);
+             .addParameter("correlationId", correlationId)
+             .addParameter("failedDir", failedDir != null ? failedDir.getAbsolutePath() : null)
+             .addParameter("retryDir", retryDir != null ? retryDir.getAbsolutePath() : null);
 
         try {
+            // Initialize failed message directory if specified
+            if (!failedHandler.initFailedDir()) {
+                audit.setError("Failed to initialize failed message directory");
+                audit.logCompletion(1);
+                return 1;
+            }
+
+            // Validate retry directory if specified
+            if (!failedHandler.validateRetryDir()) {
+                audit.setError("Invalid retry directory");
+                audit.logCompletion(1);
+                return 1;
+            }
+
+            // Load retry messages if retry directory specified
+            List<FailedMessageHandler.FailedMessage> retryMessages = failedHandler.loadRetryMessages();
+            if (!retryMessages.isEmpty()) {
+                System.out.println("Found " + retryMessages.size() + " message(s) to retry from " + retryDir.getAbsolutePath());
+                retryCount = retryMessages.size();
+            }
+
             String content = resolveMessageContent();
-            if (content == null || content.isEmpty()) {
-                System.err.println("Error: No message content provided");
+            boolean hasNewContent = content != null && !content.isEmpty();
+
+            // Need either new content or retry messages
+            if (!hasNewContent && retryMessages.isEmpty()) {
+                System.err.println("Error: No message content provided and no retry messages found");
                 audit.setError("No message content provided");
                 audit.logCompletion(1);
                 return 1;
@@ -110,44 +155,127 @@ public class PublishCommand implements Callable<Integer> {
                 ? DeliveryMode.DIRECT
                 : DeliveryMode.PERSISTENT;
 
+            // Calculate total operations for progress
+            int totalNewMessages = hasNewContent ? count : 0;
+            int totalOps = totalNewMessages + retryMessages.size();
+            if (queue2 != null) {
+                totalOps *= 2;
+            }
+
             // Use progress reporter for larger batches
             ProgressReporter progress = null;
-            boolean showProgress = count > 10;
+            boolean showProgress = totalOps > 10;
             if (showProgress) {
-                int totalOps = (queue2 != null) ? count * 2 : count;
                 progress = new ProgressReporter("Publishing", totalOps, 2);
                 progress.start();
             }
 
-            for (int i = 0; i < count; i++) {
-                TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
-                msg.setText(content);
-                msg.setDeliveryMode(mode);
+            // First, process retry messages
+            for (FailedMessageHandler.FailedMessage retryMsg : retryMessages) {
+                String msgCorrelationId = retryMsg.getCorrelationId();
+                String msgContent = retryMsg.getContent();
 
-                if (correlationId != null) {
-                    msg.setCorrelationId(correlationId);
-                }
+                try {
+                    TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
+                    msg.setText(msgContent);
+                    msg.setDeliveryMode(mode);
 
-                if (ttl > 0) {
-                    msg.setTimeToLive(ttl);
-                }
+                    if (msgCorrelationId != null) {
+                        msg.setCorrelationId(msgCorrelationId);
+                    }
 
-                producer.send(msg, queue);
+                    if (ttl > 0) {
+                        msg.setTimeToLive(ttl);
+                    }
 
-                if (showProgress) {
-                    progress.increment();
-                } else {
-                    String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
-                    System.out.println("Published message to queue '" + connection.queue + "'" + msgId);
-                }
+                    producer.send(msg, queue);
+                    retrySuccessCount++;
 
-                if (queue2 != null) {
-                    producer.send(msg, queue2);
                     if (showProgress) {
                         progress.increment();
                     } else {
-                        String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
-                        System.out.println("Published message to queue '" + secondQueue + "'" + msgId);
+                        System.out.println("Retried message to queue '" + connection.queue + "'" +
+                            (msgCorrelationId != null ? " [" + msgCorrelationId + "]" : ""));
+                    }
+
+                    if (queue2 != null) {
+                        producer.send(msg, queue2);
+                        if (showProgress) {
+                            progress.increment();
+                        }
+                    }
+
+                    // Mark as successfully retried (delete from retry dir)
+                    failedHandler.markRetrySuccess(retryMsg);
+
+                } catch (Exception e) {
+                    failedCount++;
+                    String msgId = msgCorrelationId != null ? msgCorrelationId : "retry-" + failedCount;
+                    failedMessageIds.add(msgId);
+                    System.err.println("Failed to retry message: " + e.getMessage());
+
+                    // Save to failed dir if enabled (message stays for next retry attempt)
+                    failedHandler.saveFailedMessage(msgContent, msgCorrelationId, connection.queue,
+                        e.getMessage(), failedCount);
+                }
+            }
+
+            // Then, process new messages
+            if (hasNewContent) {
+                for (int i = 0; i < count; i++) {
+                    String msgCorrelationId = correlationId;
+                    // Generate unique correlation ID for batch messages if not specified
+                    if (msgCorrelationId == null && count > 1) {
+                        msgCorrelationId = "msg-" + System.currentTimeMillis() + "-" + i;
+                    }
+
+                    try {
+                        TextMessage msg = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
+                        msg.setText(content);
+                        msg.setDeliveryMode(mode);
+
+                        if (msgCorrelationId != null) {
+                            msg.setCorrelationId(msgCorrelationId);
+                        }
+
+                        if (ttl > 0) {
+                            msg.setTimeToLive(ttl);
+                        }
+
+                        producer.send(msg, queue);
+                        successCount++;
+
+                        if (showProgress) {
+                            progress.increment();
+                        } else {
+                            String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
+                            System.out.println("Published message to queue '" + connection.queue + "'" + msgId);
+                        }
+
+                        if (queue2 != null) {
+                            producer.send(msg, queue2);
+                            if (showProgress) {
+                                progress.increment();
+                            } else {
+                                String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
+                                System.out.println("Published message to queue '" + secondQueue + "'" + msgId);
+                            }
+                        }
+
+                    } catch (Exception e) {
+                        failedCount++;
+                        String msgId = msgCorrelationId != null ? msgCorrelationId : String.valueOf(i);
+                        failedMessageIds.add(msgId);
+
+                        if (showProgress) {
+                            progress.incrementError();
+                        } else {
+                            System.err.println("Failed to publish message [" + (i + 1) + "]: " + e.getMessage());
+                        }
+
+                        // Save failed message if directory specified
+                        failedHandler.saveFailedMessage(content, msgCorrelationId, connection.queue,
+                            e.getMessage(), i);
                     }
                 }
             }
@@ -155,22 +283,63 @@ public class PublishCommand implements Callable<Integer> {
             if (showProgress) {
                 progress.stop();
                 progress.printSummary();
-            } else {
-                int totalMessages = (queue2 != null) ? count * 2 : count;
-                String queueInfo = (queue2 != null) ? " to 2 queues" : "";
-                System.out.println("Successfully published " + totalMessages + " message(s)" + queueInfo);
             }
 
-            // Log success results
-            int totalMessages = (queue2 != null) ? count * 2 : count;
-            audit.addResult("messagesPublished", totalMessages)
+            // Print summary
+            int totalSuccess = successCount + retrySuccessCount;
+            int totalMessages = (queue2 != null) ? totalSuccess * 2 : totalSuccess;
+            String queueInfo = (queue2 != null) ? " to 2 queues" : "";
+
+            if (failedCount == 0) {
+                System.out.println("Successfully published " + totalMessages + " message(s)" + queueInfo);
+            } else {
+                System.out.println("Published " + totalMessages + " message(s)" + queueInfo +
+                    ", " + failedCount + " failed");
+                if (failedHandler.isSaveEnabled()) {
+                    System.out.println("Failed messages saved to: " + failedDir.getAbsolutePath());
+                }
+            }
+
+            if (retryCount > 0) {
+                System.out.println("Retry results: " + retrySuccessCount + "/" + retryCount + " succeeded");
+            }
+
+            // Log results with partial progress
+            audit.addResult("messagesAttempted", (hasNewContent ? count : 0) + retryCount)
+                 .addResult("messagesPublished", totalSuccess)
+                 .addResult("messagesFailed", failedCount)
+                 .addResult("retryAttempted", retryCount)
+                 .addResult("retrySucceeded", retrySuccessCount)
                  .addResult("queuesUsed", (queue2 != null) ? 2 : 1);
-            audit.logCompletion(0);
-            return 0;
+
+            if (!failedMessageIds.isEmpty()) {
+                audit.addResult("failedMessageIds", failedMessageIds);
+            }
+            if (failedHandler.isSaveEnabled() && failedHandler.getSavedCount() > 0) {
+                audit.addResult("failedMessagesSaved", failedHandler.getSavedCount());
+                audit.addResult("failedDir", failedDir.getAbsolutePath());
+            }
+
+            int exitCode = failedCount > 0 ? 1 : 0;
+            if (failedCount > 0) {
+                audit.setError(failedCount + " message(s) failed to publish");
+            }
+            audit.logCompletion(exitCode);
+            return exitCode;
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
+
+            // Log partial progress even on exception
+            audit.addResult("messagesPublished", successCount + retrySuccessCount)
+                 .addResult("messagesFailed", failedCount)
+                 .addResult("retrySucceeded", retrySuccessCount);
+
+            if (!failedMessageIds.isEmpty()) {
+                audit.addResult("failedMessageIds", failedMessageIds);
+            }
+
             audit.setError(e.getMessage());
             audit.logCompletion(1);
             return 1;
