@@ -20,6 +20,18 @@ WIZARD_SOLACE_PASS=""
 WIZARD_SOLACE_QUEUE=""
 WIZARD_CONNECTED=false
 
+# SSL/TLS State
+WIZARD_USE_SSL=false
+WIZARD_AUTH_TYPE="password"  # password, certificate, or both
+WIZARD_TRUST_STORE=""
+WIZARD_TRUST_STORE_PASS=""
+WIZARD_KEY_STORE=""
+WIZARD_KEY_STORE_PASS=""
+WIZARD_CLIENT_CERT=""
+WIZARD_CLIENT_KEY=""
+WIZARD_CA_CERT=""
+WIZARD_SKIP_CERT_VALIDATION=false
+
 # -----------------------------------------------------------------------------
 # Color Functions (use printf for portability)
 # -----------------------------------------------------------------------------
@@ -135,10 +147,179 @@ wait_for_key() {
 
 show_connection_status() {
     if [[ "$WIZARD_CONNECTED" == "true" ]]; then
-        printf '\033[0;32m●\033[0m Connected to: %s (VPN: %s)\n' "$WIZARD_SOLACE_HOST" "$WIZARD_SOLACE_VPN"
+        local auth_info=""
+        case "$WIZARD_AUTH_TYPE" in
+            password) auth_info="user: $WIZARD_SOLACE_USER" ;;
+            certificate) auth_info="cert auth" ;;
+            both) auth_info="user: $WIZARD_SOLACE_USER + cert" ;;
+        esac
+        if [[ "$WIZARD_USE_SSL" == "true" ]]; then
+            printf '\033[0;32m●\033[0m Connected to: %s (VPN: %s) \033[0;33m[SSL]\033[0m %s\n' "$WIZARD_SOLACE_HOST" "$WIZARD_SOLACE_VPN" "$auth_info"
+        else
+            printf '\033[0;32m●\033[0m Connected to: %s (VPN: %s) %s\n' "$WIZARD_SOLACE_HOST" "$WIZARD_SOLACE_VPN" "$auth_info"
+        fi
     else
         printf '\033[0;31m●\033[0m Not connected\n'
     fi
+}
+
+# -----------------------------------------------------------------------------
+# SSL/TLS Configuration
+# -----------------------------------------------------------------------------
+
+setup_ssl() {
+    print_menu_header "SSL/TLS Configuration"
+
+    echo "Configure SSL/TLS settings for secure connections."
+    echo ""
+
+    # Certificate format selection
+    select_option "How are your certificates stored?" \
+        "Java KeyStore (JKS) / PKCS12 (.p12/.pfx)" \
+        "PEM files (separate cert and key files)" \
+        "PEM file (combined cert and key)" \
+        "Skip - use system defaults"
+    local cert_format=$?
+
+    case $cert_format in
+        0)
+            # JKS/PKCS12 format
+            echo ""
+            println_yellow "Client Certificate (for authentication):"
+            prompt WIZARD_KEY_STORE "Key store path (.jks, .p12, .pfx)" ""
+            if [[ -n "$WIZARD_KEY_STORE" ]]; then
+                if [[ ! -f "$WIZARD_KEY_STORE" ]]; then
+                    println_red "Warning: File not found: $WIZARD_KEY_STORE"
+                fi
+                prompt WIZARD_KEY_STORE_PASS "Key store password" "" "true"
+            fi
+
+            echo ""
+            println_yellow "Trust Store (for server validation):"
+            prompt WIZARD_TRUST_STORE "Trust store path (optional)" ""
+            if [[ -n "$WIZARD_TRUST_STORE" ]]; then
+                if [[ ! -f "$WIZARD_TRUST_STORE" ]]; then
+                    println_red "Warning: File not found: $WIZARD_TRUST_STORE"
+                fi
+                prompt WIZARD_TRUST_STORE_PASS "Trust store password" "" "true"
+            fi
+            ;;
+        1)
+            # Separate PEM files
+            echo ""
+            println_yellow "Client Certificate (for authentication):"
+            prompt WIZARD_CLIENT_CERT "Client certificate path (.pem, .crt)" ""
+            if [[ -n "$WIZARD_CLIENT_CERT" ]]; then
+                if [[ ! -f "$WIZARD_CLIENT_CERT" ]]; then
+                    println_red "Warning: File not found: $WIZARD_CLIENT_CERT"
+                fi
+                prompt WIZARD_CLIENT_KEY "Client private key path (.pem, .key)" ""
+                if [[ -n "$WIZARD_CLIENT_KEY" && ! -f "$WIZARD_CLIENT_KEY" ]]; then
+                    println_red "Warning: File not found: $WIZARD_CLIENT_KEY"
+                fi
+                prompt WIZARD_KEY_STORE_PASS "Private key password (if encrypted)" "" "true"
+            fi
+
+            echo ""
+            println_yellow "CA Certificate (for server validation):"
+            prompt WIZARD_CA_CERT "CA certificate path (optional)" ""
+            if [[ -n "$WIZARD_CA_CERT" && ! -f "$WIZARD_CA_CERT" ]]; then
+                println_red "Warning: File not found: $WIZARD_CA_CERT"
+            fi
+            ;;
+        2)
+            # Combined PEM file
+            echo ""
+            println_yellow "Combined PEM file (contains both cert and key):"
+            prompt WIZARD_KEY_STORE "PEM file path" ""
+            if [[ -n "$WIZARD_KEY_STORE" && ! -f "$WIZARD_KEY_STORE" ]]; then
+                println_red "Warning: File not found: $WIZARD_KEY_STORE"
+            fi
+            prompt WIZARD_KEY_STORE_PASS "Private key password (if encrypted)" "" "true"
+
+            echo ""
+            println_yellow "CA Certificate (for server validation):"
+            prompt WIZARD_CA_CERT "CA certificate path (optional)" ""
+            ;;
+        3)
+            # Skip - use defaults
+            echo ""
+            println_yellow "Using system default certificates."
+            ;;
+    esac
+
+    # Server validation option
+    echo ""
+    if prompt_yes_no "Skip server certificate validation? (NOT recommended for production)" "n"; then
+        WIZARD_SKIP_CERT_VALIDATION=true
+        println_yellow "⚠ Server certificate validation disabled"
+    else
+        WIZARD_SKIP_CERT_VALIDATION=false
+    fi
+
+    WIZARD_USE_SSL=true
+    println_green "✓ SSL/TLS configuration complete"
+}
+
+# Build SSL arguments string
+build_ssl_args() {
+    local args=""
+
+    if [[ "$WIZARD_USE_SSL" == "true" ]]; then
+        args="$args --ssl"
+
+        # Key store (client certificate)
+        if [[ -n "$WIZARD_KEY_STORE" ]]; then
+            args="$args --key-store '$WIZARD_KEY_STORE'"
+            [[ -n "$WIZARD_KEY_STORE_PASS" ]] && args="$args --key-store-password '$WIZARD_KEY_STORE_PASS'"
+        fi
+
+        # Separate PEM files
+        if [[ -n "$WIZARD_CLIENT_CERT" ]]; then
+            args="$args --client-cert '$WIZARD_CLIENT_CERT'"
+            [[ -n "$WIZARD_CLIENT_KEY" ]] && args="$args --client-key '$WIZARD_CLIENT_KEY'"
+        fi
+
+        # Trust store
+        if [[ -n "$WIZARD_TRUST_STORE" ]]; then
+            args="$args --trust-store '$WIZARD_TRUST_STORE'"
+            [[ -n "$WIZARD_TRUST_STORE_PASS" ]] && args="$args --trust-store-password '$WIZARD_TRUST_STORE_PASS'"
+        fi
+
+        # CA cert
+        if [[ -n "$WIZARD_CA_CERT" ]]; then
+            args="$args --ca-cert '$WIZARD_CA_CERT'"
+        fi
+
+        # Skip validation
+        if [[ "$WIZARD_SKIP_CERT_VALIDATION" == "true" ]]; then
+            args="$args --skip-cert-validation"
+        fi
+    fi
+
+    echo "$args"
+}
+
+# Build connection arguments (basic + SSL)
+build_connection_args() {
+    local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN"
+
+    # Add username/password if provided
+    if [[ -n "$WIZARD_SOLACE_USER" ]]; then
+        args="$args -u $WIZARD_SOLACE_USER"
+    fi
+    if [[ -n "$WIZARD_SOLACE_PASS" ]]; then
+        args="$args -p '$WIZARD_SOLACE_PASS'"
+    fi
+
+    # Add SSL args
+    local ssl_args
+    ssl_args=$(build_ssl_args)
+    if [[ -n "$ssl_args" ]]; then
+        args="$args $ssl_args"
+    fi
+
+    echo "$args"
 }
 
 # -----------------------------------------------------------------------------
@@ -153,21 +334,65 @@ setup_connection() {
 
     prompt WIZARD_SOLACE_HOST "Solace host" "${SOLACE_HOST:-tcp://localhost:55555}"
     prompt WIZARD_SOLACE_VPN "Message VPN" "${SOLACE_VPN:-default}"
-    prompt WIZARD_SOLACE_USER "Username" "${SOLACE_USER:-admin}"
-    prompt WIZARD_SOLACE_PASS "Password" "${SOLACE_PASS:-admin}" "true"
+
+    # Check if SSL is implied by the host URL
+    local host_lower="${WIZARD_SOLACE_HOST,,}"
+    if [[ "$host_lower" == tcps://* ]]; then
+        println_yellow "Detected secure connection (tcps://)"
+        WIZARD_USE_SSL=true
+    fi
+
+    # Ask about authentication type
+    echo ""
+    select_option "Authentication method:" \
+        "Username and Password" \
+        "Client Certificate (mTLS)" \
+        "Both (certificate + username for authorization)"
+    local auth_choice=$?
+
+    case $auth_choice in
+        0)
+            WIZARD_AUTH_TYPE="password"
+            prompt WIZARD_SOLACE_USER "Username" "${SOLACE_USER:-admin}"
+            prompt WIZARD_SOLACE_PASS "Password" "${SOLACE_PASS:-admin}" "true"
+            ;;
+        1)
+            WIZARD_AUTH_TYPE="certificate"
+            WIZARD_USE_SSL=true
+            setup_ssl
+            # Clear username/password for pure cert auth
+            WIZARD_SOLACE_USER=""
+            WIZARD_SOLACE_PASS=""
+            ;;
+        2)
+            WIZARD_AUTH_TYPE="both"
+            WIZARD_USE_SSL=true
+            prompt WIZARD_SOLACE_USER "Username" "${SOLACE_USER:-admin}"
+            prompt WIZARD_SOLACE_PASS "Password" "${SOLACE_PASS:-admin}" "true"
+            setup_ssl
+            ;;
+    esac
+
+    # Ask about SSL for password auth if not already configured and using tcps://
+    if [[ "$WIZARD_AUTH_TYPE" == "password" && "$WIZARD_USE_SSL" == "true" ]]; then
+        echo ""
+        if prompt_yes_no "Configure custom SSL certificates?" "n"; then
+            setup_ssl
+        fi
+    fi
+
     prompt WIZARD_SOLACE_QUEUE "Default queue" "${SOLACE_QUEUE:-demo.queue}"
 
     echo ""
     echo "Testing connection..."
 
+    # Build test command
+    local test_args
+    test_args=$(build_connection_args)
+    test_args="$test_args -q $WIZARD_SOLACE_QUEUE --browse -n 0 -t 2"
+
     # Test connection by trying to browse
-    if solace_cli consume \
-        -H "$WIZARD_SOLACE_HOST" \
-        -v "$WIZARD_SOLACE_VPN" \
-        -u "$WIZARD_SOLACE_USER" \
-        -p "$WIZARD_SOLACE_PASS" \
-        -q "$WIZARD_SOLACE_QUEUE" \
-        --browse -n 0 -t 2 2>/dev/null; then
+    if eval "solace_cli consume $test_args" 2>/dev/null; then
         println_green "✓ Connection successful!"
         WIZARD_CONNECTED=true
     else
@@ -245,32 +470,37 @@ wizard_publish() {
     echo ""
     println_yellow "Executing:"
 
-    local cmd="solace-cli publish -H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p **** -q $queue"
-    [[ -n "$message_file" ]] && cmd="$cmd -f $message_file"
-    [[ $message_count -gt 1 ]] && cmd="$cmd -c $message_count"
-    [[ -n "$correlation_id" ]] && cmd="$cmd --correlation-id $correlation_id"
-    [[ "$ttl" != "0" && -n "$ttl" ]] && cmd="$cmd --ttl $ttl"
-    [[ "$delivery_mode" == "DIRECT" ]] && cmd="$cmd --delivery-mode DIRECT"
-    [[ -n "$second_queue" ]] && cmd="$cmd -Q $second_queue"
-    [[ -n "$audit_log" ]] && cmd="$cmd --audit-log $audit_log"
+    local display_cmd="solace-cli publish -H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN"
+    [[ -n "$WIZARD_SOLACE_USER" ]] && display_cmd="$display_cmd -u $WIZARD_SOLACE_USER -p ****"
+    [[ "$WIZARD_USE_SSL" == "true" ]] && display_cmd="$display_cmd --ssl [cert options...]"
+    display_cmd="$display_cmd -q $queue"
+    [[ -n "$message_file" ]] && display_cmd="$display_cmd -f $message_file"
+    [[ $message_count -gt 1 ]] && display_cmd="$display_cmd -c $message_count"
+    [[ -n "$correlation_id" ]] && display_cmd="$display_cmd --correlation-id $correlation_id"
+    [[ "$ttl" != "0" && -n "$ttl" ]] && display_cmd="$display_cmd --ttl $ttl"
+    [[ "$delivery_mode" == "DIRECT" ]] && display_cmd="$display_cmd --delivery-mode DIRECT"
+    [[ -n "$second_queue" ]] && display_cmd="$display_cmd -Q $second_queue"
+    [[ -n "$audit_log" ]] && display_cmd="$display_cmd --audit-log $audit_log"
 
-    echo "$cmd"
+    echo "$display_cmd"
     echo ""
 
     # Execute command
-    local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
-    [[ -n "$message_file" ]] && args="$args -f $message_file"
+    local args
+    args=$(build_connection_args)
+    args="$args -q $queue"
+    [[ -n "$message_file" ]] && args="$args -f '$message_file'"
     [[ $message_count -gt 1 ]] && args="$args -c $message_count"
-    [[ -n "$correlation_id" ]] && args="$args --correlation-id $correlation_id"
+    [[ -n "$correlation_id" ]] && args="$args --correlation-id '$correlation_id'"
     [[ "$ttl" != "0" && -n "$ttl" ]] && args="$args --ttl $ttl"
     [[ "$delivery_mode" == "DIRECT" ]] && args="$args --delivery-mode DIRECT"
-    [[ -n "$second_queue" ]] && args="$args -Q $second_queue"
-    [[ -n "$audit_log" ]] && args="$args --audit-log $audit_log"
+    [[ -n "$second_queue" ]] && args="$args -Q '$second_queue'"
+    [[ -n "$audit_log" ]] && args="$args --audit-log '$audit_log'"
 
     if [[ -n "$message_file" ]]; then
-        solace_cli publish $args
+        eval "solace_cli publish $args"
     else
-        solace_cli publish $args "$message_content"
+        eval "solace_cli publish $args '$message_content'"
     fi
 
     wait_for_key
@@ -321,19 +551,21 @@ wizard_consume() {
     echo ""
     println_yellow "Executing:"
 
-    local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
-    args="$args -n $count -t $timeout"
+    local display_cmd="solace-cli consume -H $WIZARD_SOLACE_HOST ... -q $queue -n $count -t $timeout"
+    echo "$display_cmd"
+    echo ""
+
+    local args
+    args=$(build_connection_args)
+    args="$args -q $queue -n $count -t $timeout"
 
     [[ $mode_choice -eq 1 ]] && args="$args --browse"
     [[ $mode_choice -eq 2 ]] && args="$args --no-ack"
     [[ "$verbose" == "true" ]] && args="$args --verbose"
-    [[ -n "$output_dir" ]] && args="$args -o $output_dir"
+    [[ -n "$output_dir" ]] && args="$args -o '$output_dir'"
     [[ "$use_correlation" == "true" ]] && args="$args --use-correlation-id"
 
-    echo "solace-cli consume ... -q $queue -n $count -t $timeout"
-    echo ""
-
-    solace_cli consume $args
+    eval "solace_cli consume $args"
 
     if [[ -n "$output_dir" ]]; then
         echo ""
@@ -404,16 +636,17 @@ wizard_folder_publish() {
     echo ""
     println_yellow "Executing:"
 
-    local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
-    args="$args --pattern '$pattern'"
+    echo "solace-cli folder-publish ... --pattern '$pattern' $folder"
+    echo ""
+
+    local args
+    args=$(build_connection_args)
+    args="$args -q $queue --pattern '$pattern'"
 
     [[ "$recursive" == "true" ]] && args="$args --recursive"
     [[ "$use_filename_correlation" == "true" ]] && args="$args --use-filename-as-correlation"
     [[ -n "$sort_by" ]] && args="$args --sort $sort_by"
     [[ "$dry_run" == "true" ]] && args="$args --dry-run"
-
-    echo "solace-cli folder-publish ... --pattern '$pattern' $folder"
-    echo ""
 
     eval "solace_cli folder-publish $args '$folder'"
 
@@ -464,18 +697,19 @@ wizard_copy_queue() {
     echo ""
     println_yellow "Executing:"
 
-    local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS"
-    args="$args -q $source_queue --dest $dest_queue"
+    echo "solace-cli copy-queue ... -q $source_queue --dest $dest_queue"
+    echo ""
+
+    local args
+    args=$(build_connection_args)
+    args="$args -q $source_queue --dest '$dest_queue'"
     args="$args -c $count -t $timeout"
 
     [[ $move_mode -eq 1 ]] && args="$args --move"
     [[ "$preserve_props" == "true" ]] && args="$args --preserve-properties"
     [[ "$dry_run" == "true" ]] && args="$args --dry-run"
 
-    echo "solace-cli copy-queue ... -q $source_queue --dest $dest_queue"
-    echo ""
-
-    solace_cli copy-queue $args
+    eval "solace_cli copy-queue $args"
 
     wait_for_key
 }
@@ -531,17 +765,18 @@ wizard_perf_test() {
     echo ""
     println_yellow "Executing:"
 
-    local args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
-    args="$args --mode $mode --count $count --size $size"
+    echo "solace-cli perf-test ... --mode $mode --count $count --size $size"
+    echo ""
+
+    local args
+    args=$(build_connection_args)
+    args="$args -q $queue --mode $mode --count $count --size $size"
 
     [[ "$measure_latency" == "true" ]] && args="$args --latency"
     [[ -n "$rate" ]] && args="$args --rate $rate"
     [[ "$threads" != "1" ]] && args="$args --threads $threads"
 
-    echo "solace-cli perf-test ... --mode $mode --count $count --size $size"
-    echo ""
-
-    solace_cli perf-test $args
+    eval "solace_cli perf-test $args"
 
     wait_for_key
 }
@@ -605,14 +840,16 @@ wizard_oracle_publish() {
     echo "solace-cli oracle-publish ... --sql \"$sql_query\""
     echo ""
 
-    local exec_args="-H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN -u $WIZARD_SOLACE_USER -p $WIZARD_SOLACE_PASS -q $queue"
-    exec_args="$exec_args --db-host $db_host --db-port $db_port --db-service $db_service --db-user $db_user --db-password $db_pass"
+    local exec_args
+    exec_args=$(build_connection_args)
+    exec_args="$exec_args -q $queue"
+    exec_args="$exec_args --db-host $db_host --db-port $db_port --db-service $db_service --db-user $db_user --db-password '$db_pass'"
 
     [[ -n "$message_col" ]] && exec_args="$exec_args --message-column $message_col"
     [[ -n "$correlation_col" ]] && exec_args="$exec_args --correlation-column $correlation_col"
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
 
-    solace_cli oracle-publish $exec_args --sql "$sql_query"
+    eval "solace_cli oracle-publish $exec_args --sql '$sql_query'"
 
     wait_for_key
 }
@@ -757,15 +994,35 @@ COMMANDS OVERVIEW
 
 COMMON OPTIONS
 
-  -H, --host      Solace broker host (tcp://host:port)
+  -H, --host      Solace broker host (tcp://host:port or tcps://host:port)
   -v, --vpn       Message VPN name
-  -u, --username  Authentication username
+  -u, --username  Authentication username (optional with cert auth)
   -p, --password  Authentication password
   -q, --queue     Queue name
+
+SSL/TLS OPTIONS
+
+  --ssl                     Enable SSL/TLS connection
+  --key-store PATH          Client keystore (JKS/PKCS12) for mTLS
+  --key-store-password      Password for keystore
+  --trust-store PATH        Trust store for server validation
+  --trust-store-password    Password for trust store
+  --client-cert PATH        Client certificate (PEM format)
+  --client-key PATH         Client private key (PEM format)
+  --ca-cert PATH            CA certificate (PEM format)
+  --skip-cert-validation    Skip server cert validation (dev only)
+
+AUTHENTICATION MODES
+
+  1. Username/Password - Traditional authentication
+  2. Client Certificate (mTLS) - Certificate-based authentication
+  3. Both - Certificate auth with username for authorization
 
 GETTING STARTED
 
   1. Setup connection using "Configure Connection"
+     - Choose your authentication method
+     - For certificate auth, provide cert/key paths
   2. Create queues using "Queue Setup"
   3. Try publishing a message
   4. Try consuming messages
