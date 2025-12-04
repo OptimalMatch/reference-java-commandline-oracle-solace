@@ -258,6 +258,19 @@ classDiagram
         -String username
         -String password
         -String queue
+        -String keyStore
+        -String trustStore
+        -String clientCert
+        -String clientKey
+        +isSSLEnabled() boolean
+        +hasClientCertificate() boolean
+    }
+
+    class SSLHelper {
+        +createKeyStore(options) KeyStore
+        +createTrustStore(options) KeyStore
+        -loadPEMCertificates(file) List~Certificate~
+        -loadPEMPrivateKey(file) PrivateKey
     }
 
     class OracleOptions {
@@ -329,6 +342,8 @@ classDiagram
     CopyQueueCommand --> SolaceConnection
     OraclePublishCommand --> SolaceConnection
     FolderPublishCommand --> SolaceConnection
+
+    SolaceConnection --> SSLHelper
 
     ConsumeCommand --> ExclusionList
     FolderPublishCommand --> ExclusionList
@@ -436,11 +451,87 @@ java -jar target/solace-cli-1.0.0.jar --help
 
 | Option | Description |
 |--------|-------------|
-| `-H, --host` | Solace broker host (e.g., `tcp://localhost:55555`) |
+| `-H, --host` | Solace broker host (e.g., `tcp://localhost:55555` or `tcps://localhost:55443`) |
 | `-v, --vpn` | Message VPN name |
-| `-u, --username` | Username for authentication |
+| `-u, --username` | Username for authentication (optional with certificate auth) |
 | `-p, --password` | Password (interactive prompt if omitted) |
 | `-q, --queue` | Queue name |
+
+### SSL/TLS Options
+
+For secure connections using TLS/SSL, the following options are available:
+
+| Option | Description |
+|--------|-------------|
+| `--ssl` | Enable SSL/TLS (auto-detected if host uses `tcps://`) |
+| `--trust-store` | Path to trust store file (JKS, PKCS12, or PEM) for server certificate validation |
+| `--trust-store-password` | Password for trust store (if required) |
+| `--key-store` | Path to key store file (JKS, PKCS12, or PEM) for client certificate authentication |
+| `--key-store-password` | Password for key store |
+| `--client-cert` | Path to client certificate file (PEM format, use with `--client-key`) |
+| `--client-key` | Path to client private key file (PEM format, use with `--client-cert`) |
+| `--ca-cert` | Path to CA certificate file (PEM format) for server validation |
+| `--skip-cert-validation` | Skip server certificate validation (NOT recommended for production) |
+| `--tls-version` | TLS protocol version (default: `TLSv1.2`) |
+
+#### SSL/TLS Authentication Examples
+
+```bash
+# Connect using PKCS12 keystore for client certificate authentication
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcps://solace-broker:55443 \
+  -v default \
+  -q my-queue \
+  --key-store /path/to/client.p12 \
+  --key-store-password keystorepass \
+  --trust-store /path/to/truststore.jks \
+  --trust-store-password truststorepass \
+  "Secure message"
+
+# Connect using PEM certificate files
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcps://solace-broker:55443 \
+  -v default \
+  -q my-queue \
+  --client-cert /path/to/client.pem \
+  --client-key /path/to/client.key \
+  --ca-cert /path/to/ca.pem \
+  "Secure message with PEM certs"
+
+# Combined authentication: username + client certificate
+java -jar target/solace-cli-1.0.0.jar publish \
+  -H tcps://solace-broker:55443 \
+  -v default \
+  -u myuser \
+  -p mypassword \
+  -q my-queue \
+  --key-store /path/to/client.p12 \
+  --key-store-password keystorepass \
+  "Message with dual authentication"
+
+# Skip certificate validation (development/testing only)
+java -jar target/solace-cli-1.0.0.jar consume \
+  -H tcps://localhost:55443 \
+  -v default \
+  -u admin \
+  -p admin \
+  -q test-queue \
+  --skip-cert-validation \
+  -n 10
+
+# Use TLS 1.3 with custom CA certificate
+java -jar target/solace-cli-1.0.0.jar oracle-publish \
+  -H tcps://solace-prod:55443 \
+  -v production \
+  -q orders.inbound \
+  --ca-cert /path/to/corporate-ca.pem \
+  --tls-version TLSv1.3 \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT payload FROM orders"
+```
 
 ---
 
@@ -2032,6 +2123,32 @@ Tests will automatically skip when Docker is unavailable (e.g., on RedHat server
 - Check the `--pattern` glob syntax
 - Verify the folder path exists
 - Use `--dry-run` to preview matched files
+
+### SSL/TLS Connection Failed
+- Verify the broker supports TLS on the specified port (typically 55443)
+- Ensure the host URL uses `tcps://` protocol
+- Check that certificate files exist and are readable
+- Verify certificate format matches the option used:
+  - `--key-store` / `--trust-store`: JKS or PKCS12 format
+  - `--client-cert` / `--client-key` / `--ca-cert`: PEM format
+- For self-signed certificates, use `--skip-cert-validation` (development only)
+
+### SSL Certificate Errors
+- **"PKIX path building failed"**: Server certificate not trusted
+  - Add CA certificate with `--ca-cert` or `--trust-store`
+  - Or use `--skip-cert-validation` for testing
+- **"Certificate expired"**: Server or client certificate has expired
+  - Check certificate validity dates
+- **"No certificate"**: Client certificate required but not provided
+  - Add `--key-store` or `--client-cert` + `--client-key`
+- **"Private key mismatch"**: Certificate and key don't match
+  - Verify the private key corresponds to the certificate
+
+### SSL Certificate Format Issues
+- **PEM files**: Should contain `-----BEGIN CERTIFICATE-----` headers
+- **PKCS12 (.p12/.pfx)**: Binary format, requires password
+- **JKS (.jks)**: Java KeyStore format, requires password
+- Convert between formats using `keytool` or `openssl`
 
 ---
 

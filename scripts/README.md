@@ -61,7 +61,7 @@ Enter choice:
 | **4) Copy/Move queue** | Transfer messages between queues |
 | **5) Performance test** | Run throughput and latency benchmarks |
 | **6) Oracle operations** | Database integration (publish, export, insert) |
-| **7) Configure connection** | Change Solace host, VPN, credentials |
+| **7) Configure connection** | Change Solace host, VPN, credentials, and SSL/TLS settings |
 | **8) Queue setup** | Create/delete queues via SEMP API |
 
 ### Example: Publishing Messages
@@ -133,9 +133,46 @@ Action:
 Enter choice (1-3):
 ```
 
+### Example: SSL/TLS Configuration
+
+The wizard supports SSL/TLS connections for secure broker communication:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Configure Connection
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Current: tcp://localhost:55555
+
+Solace host URL [tcp://localhost:55555]: tcps://solace-broker:55443
+Message VPN [default]: production
+Username [admin]:
+Password [****]:
+
+Enable SSL/TLS? [Y/n]: y
+
+SSL/TLS Authentication:
+
+  1) Trust store only (server validation)
+  2) Key store (PKCS12/JKS client certificate)
+  3) PEM files (client cert + key)
+  4) Skip certificate validation (dev only)
+
+Enter choice (1-4): 2
+
+Key store file: /path/to/client.p12
+Key store password: ********
+Trust store file [optional]: /path/to/truststore.jks
+Trust store password: ********
+TLS version [TLSv1.2]: TLSv1.3
+
+Testing connection...
+✓ Connected successfully with SSL/TLS
+```
+
 The wizard automatically:
 - Validates connection settings on startup
-- Shows the current connection status
+- Shows the current connection status (including SSL indicator)
 - Provides sensible defaults for all prompts
 - Displays the exact CLI command being executed
 - Returns to the main menu after each operation
@@ -203,6 +240,18 @@ export SOLACE_VPN=default
 export SOLACE_USER=admin
 export SOLACE_PASS=admin
 export SOLACE_QUEUE=demo.queue
+
+# SSL/TLS Settings (optional)
+export SOLACE_SSL=false                    # Enable SSL/TLS
+export SOLACE_KEY_STORE=/path/to/client.p12
+export SOLACE_KEY_STORE_PASSWORD=password
+export SOLACE_TRUST_STORE=/path/to/truststore.jks
+export SOLACE_TRUST_STORE_PASSWORD=password
+export SOLACE_CLIENT_CERT=/path/to/client.pem
+export SOLACE_CLIENT_KEY=/path/to/client.key
+export SOLACE_CA_CERT=/path/to/ca.pem
+export SOLACE_SKIP_CERT_VALIDATION=false
+export SOLACE_TLS_VERSION=TLSv1.2
 
 # Oracle Connection (for oracle-* commands)
 export ORACLE_HOST=localhost
@@ -408,6 +457,15 @@ Check SEMP is enabled and credentials are correct:
 ```bash
 curl -u admin:admin http://localhost:8080/SEMP/v2/config/msgVpns/default
 ```
+
+### SSL/TLS connection errors
+- Ensure the host URL uses `tcps://` (not `tcp://`)
+- Verify certificate files exist and have correct permissions
+- Check certificate format matches the option:
+  - `--key-store` / `--trust-store`: PKCS12 (.p12) or JKS (.jks)
+  - `--client-cert` / `--client-key` / `--ca-cert`: PEM format
+- For testing with self-signed certs, use `--skip-cert-validation`
+- Verify TLS version is supported by both client and broker
 
 ## Customization
 
