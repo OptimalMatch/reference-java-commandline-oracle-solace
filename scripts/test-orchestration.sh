@@ -3,19 +3,20 @@
 # Test Script for Queue Orchestration
 # =============================================================================
 # This script tests the orchestrate.sh script by:
-#   1. Publishing test messages to a source queue
-#   2. Running the orchestration to consume, transform, and publish
-#   3. Verifying the messages in the destination queue
-#   4. Testing various options (browse, dry-run, custom columns)
-#   5. Cleaning up
+#   1. Ensuring Solace Docker container is running
+#   2. Ensuring Solace queues are configured
+#   3. Publishing test messages to a source queue
+#   4. Running the orchestration to consume, transform, and publish
+#   5. Verifying the messages in the destination queue
+#   6. Testing various options (browse, dry-run, custom columns)
+#   7. Cleaning up
 #
 # Prerequisites:
-#   - Solace broker running (default: tcp://localhost:55555)
+#   - Docker installed and running
 #   - Project JAR built (mvn clean package)
-#   - Demo queues created (./setup-solace.sh create)
 #
 # Usage:
-#   ./test-orchestration.sh [--skip-cleanup]
+#   ./test-orchestration.sh [--skip-cleanup] [--skip-solace-setup]
 #
 # =============================================================================
 
@@ -37,6 +38,7 @@ SOURCE_QUEUE="${SOURCE_QUEUE:-demo.queue}"
 DEST_QUEUE="${DEST_QUEUE:-demo.queue.backup}"
 
 SKIP_CLEANUP=false
+SKIP_SOLACE_SETUP=false
 
 # -----------------------------------------------------------------------------
 # Parse Arguments
@@ -48,11 +50,16 @@ while [[ $# -gt 0 ]]; do
             SKIP_CLEANUP=true
             shift
             ;;
+        --skip-solace-setup)
+            SKIP_SOLACE_SETUP=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [--skip-cleanup]"
+            echo "Usage: $0 [--skip-cleanup] [--skip-solace-setup]"
             echo ""
             echo "Options:"
-            echo "  --skip-cleanup   Don't clean up test files and queue messages"
+            echo "  --skip-cleanup       Don't clean up test files and queue messages"
+            echo "  --skip-solace-setup  Skip Solace Docker and queue setup checks"
             echo ""
             echo "Environment Variables:"
             echo "  SOLACE_HOST      Solace broker host (default: tcp://localhost:55555)"
@@ -66,6 +73,86 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# -----------------------------------------------------------------------------
+# Solace Setup Functions
+# -----------------------------------------------------------------------------
+
+ensure_solace_docker() {
+    if [[ "$SKIP_SOLACE_SETUP" == "true" ]]; then
+        info "Skipping Solace Docker setup (--skip-solace-setup specified)"
+        return 0
+    fi
+
+    # Check if Docker is available
+    if ! command -v docker &> /dev/null; then
+        error "Docker is not installed or not in PATH"
+        echo "  Please install Docker: https://docs.docker.com/get-docker/"
+        exit 1
+    fi
+
+    if ! docker info &> /dev/null; then
+        error "Docker daemon is not running"
+        echo "  Please start the Docker daemon"
+        exit 1
+    fi
+
+    info "Checking Solace Docker container..."
+
+    # Check if solace-docker.sh exists
+    if [[ ! -x "${SCRIPT_DIR}/solace-docker.sh" ]]; then
+        error "solace-docker.sh not found or not executable"
+        exit 1
+    fi
+
+    # Check if container is running by checking SEMP API connectivity
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -u "admin:admin" "http://localhost:8080/SEMP/v2/config/msgVpns/default" 2>/dev/null || echo "000")
+
+    if [[ "$http_code" == "200" ]]; then
+        info "Solace broker is already running"
+        return 0
+    fi
+
+    # Try to start the Solace container (solace-docker.sh handles waiting for broker to be ready)
+    info "Starting Solace Docker container..."
+    "${SCRIPT_DIR}/solace-docker.sh" start
+
+    info "Solace Docker container is running"
+}
+
+ensure_solace_queues() {
+    if [[ "$SKIP_SOLACE_SETUP" == "true" ]]; then
+        info "Skipping Solace queue setup (--skip-solace-setup specified)"
+        return 0
+    fi
+
+    info "Checking Solace queues..."
+
+    # Check if setup-solace.sh exists
+    if [[ ! -x "${SCRIPT_DIR}/setup-solace.sh" ]]; then
+        error "setup-solace.sh not found or not executable"
+        exit 1
+    fi
+
+    # Check if queues exist by trying to browse source queue
+    if solace_cli consume -H "$SOLACE_HOST" -v "$SOLACE_VPN" -u "$SOLACE_USER" -p "$SOLACE_PASS" -q "$SOURCE_QUEUE" --browse -n 0 -t 2 &>/dev/null; then
+        info "Solace queues are configured"
+        return 0
+    fi
+
+    # Queues don't exist, create them
+    info "Creating Solace queues..."
+    "${SCRIPT_DIR}/setup-solace.sh" create
+
+    # Verify queues are now accessible
+    if ! solace_cli consume -H "$SOLACE_HOST" -v "$SOLACE_VPN" -u "$SOLACE_USER" -p "$SOLACE_PASS" -q "$SOURCE_QUEUE" --browse -n 0 -t 2 &>/dev/null; then
+        error "Failed to create Solace queues"
+        exit 1
+    fi
+
+    info "Solace queues are configured"
+}
 
 # -----------------------------------------------------------------------------
 # Helper Functions
@@ -159,15 +246,18 @@ step_check_prerequisites() {
     check_jar
     info "Solace CLI JAR: OK"
 
-    # Check Solace connectivity
-    info "Testing Solace connection at $SOLACE_HOST..."
+    # Ensure Solace Docker is running
+    ensure_solace_docker
+
+    # Ensure Solace queues are configured
+    ensure_solace_queues
+
+    # Final connectivity check
+    info "Verifying Solace connection at $SOLACE_HOST..."
     if solace_cli consume -H "$SOLACE_HOST" -v "$SOLACE_VPN" -u "$SOLACE_USER" -p "$SOLACE_PASS" -q "$SOURCE_QUEUE" --browse -n 0 -t 2 &>/dev/null; then
         info "Solace broker: OK"
     else
         error "Could not connect to Solace broker at $SOLACE_HOST"
-        echo "  Make sure the broker is running and queues are created:"
-        echo "    ./solace-docker.sh start"
-        echo "    ./setup-solace.sh create"
         exit 1
     fi
 
