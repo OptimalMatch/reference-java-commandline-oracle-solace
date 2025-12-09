@@ -1054,6 +1054,162 @@ wizard_orchestration() {
 }
 
 # -----------------------------------------------------------------------------
+# Oracle Orchestration Wizard
+# -----------------------------------------------------------------------------
+
+wizard_oracle_orchestration() {
+    print_menu_header "Oracle to Solace Orchestration"
+
+    echo "Orchestrate message flow: Oracle Query -> Transform -> Publish"
+    echo ""
+    echo "This will:"
+    echo "  1. Execute an Oracle query and export each row as a file"
+    echo "  2. Transform each file (placeholder - customize as needed)"
+    echo "  3. Publish transformed files to a destination Solace queue"
+    echo ""
+
+    # Oracle connection
+    local db_host db_port db_service db_user db_pass
+    println_yellow "Oracle Connection:"
+    prompt db_host "Oracle host" "${ORACLE_HOST:-localhost}"
+    prompt db_port "Oracle port" "${ORACLE_PORT:-1521}"
+    prompt db_service "Oracle service name" "${ORACLE_SERVICE:-ORCL}"
+    prompt db_user "Database username" "${ORACLE_USER:-scott}"
+    prompt db_pass "Database password" "${ORACLE_PASS:-tiger}" "true"
+
+    # SQL query
+    echo ""
+    println_yellow "SQL Query:"
+    select_option "How do you want to provide the SQL query?" \
+        "Type SQL query inline" \
+        "Read from SQL file"
+    local sql_choice=$?
+
+    local sql_query=""
+    local sql_file=""
+
+    case $sql_choice in
+        0)
+            echo ""
+            echo "Enter SQL SELECT statement (single line):"
+            read -r sql_query
+            if [[ -z "$sql_query" ]]; then
+                println_red "SQL query is required"
+                wait_for_key
+                return
+            fi
+            ;;
+        1)
+            prompt sql_file "SQL file path" ""
+            if [[ ! -f "$sql_file" ]]; then
+                println_red "SQL file not found: $sql_file"
+                wait_for_key
+                return
+            fi
+            ;;
+    esac
+
+    # Column configuration
+    echo ""
+    local message_col filename_col
+    prompt message_col "Message column name (leave empty for first column)" ""
+    prompt filename_col "Filename column (leave empty for sequential)" ""
+
+    # Destination queue
+    echo ""
+    println_yellow "Solace Destination:"
+    local dest_queue
+    prompt dest_queue "Destination queue" "output.queue"
+
+    if [[ -z "$dest_queue" ]]; then
+        println_red "Destination queue is required"
+        wait_for_key
+        return
+    fi
+
+    # Working directory
+    local work_dir
+    prompt work_dir "Working directory" "/tmp/solace-oracle-orchestration"
+
+    # Processing options
+    local dry_run=false
+    local verbose=false
+    local keep_files=false
+
+    echo ""
+    if prompt_yes_no "Keep files after processing (no cleanup)?" "n"; then
+        keep_files=true
+    fi
+
+    if prompt_yes_no "Enable verbose output?" "n"; then
+        verbose=true
+    fi
+
+    if prompt_yes_no "Dry run (preview without executing)?" "n"; then
+        dry_run=true
+    fi
+
+    # Build and execute command
+    echo ""
+    println_yellow "Executing Oracle orchestration:"
+    echo ""
+
+    local display_cmd="orchestrate-oracle.sh"
+    display_cmd="$display_cmd --db-host $db_host --db-port $db_port --db-service $db_service"
+    display_cmd="$display_cmd -d $dest_queue -w $work_dir"
+    [[ -n "$sql_query" ]] && display_cmd="$display_cmd --sql \"...\""
+    [[ -n "$sql_file" ]] && display_cmd="$display_cmd --sql-file $sql_file"
+    [[ "$keep_files" == "true" ]] && display_cmd="$display_cmd --no-cleanup"
+    [[ "$verbose" == "true" ]] && display_cmd="$display_cmd --verbose"
+    [[ "$dry_run" == "true" ]] && display_cmd="$display_cmd --dry-run"
+
+    echo "$display_cmd"
+    echo ""
+
+    # Build actual command with all args
+    local orch_args=""
+
+    # Oracle args
+    orch_args="$orch_args --db-host $db_host --db-port $db_port --db-service $db_service"
+    orch_args="$orch_args --db-user $db_user --db-password '$db_pass'"
+
+    # SQL args
+    [[ -n "$sql_query" ]] && orch_args="$orch_args --sql '$sql_query'"
+    [[ -n "$sql_file" ]] && orch_args="$orch_args --sql-file '$sql_file'"
+    [[ -n "$message_col" ]] && orch_args="$orch_args --message-column '$message_col'"
+    [[ -n "$filename_col" ]] && orch_args="$orch_args --filename-column '$filename_col'"
+
+    # Solace connection args
+    orch_args="$orch_args -H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN"
+    [[ -n "$WIZARD_SOLACE_USER" ]] && orch_args="$orch_args -u $WIZARD_SOLACE_USER"
+    [[ -n "$WIZARD_SOLACE_PASS" ]] && orch_args="$orch_args -p '$WIZARD_SOLACE_PASS'"
+
+    # Add SSL args if enabled
+    if [[ "$WIZARD_USE_SSL" == "true" ]]; then
+        orch_args="$orch_args --ssl"
+        [[ -n "$WIZARD_KEY_STORE" ]] && orch_args="$orch_args --key-store '$WIZARD_KEY_STORE'"
+        [[ -n "$WIZARD_KEY_STORE_PASS" ]] && orch_args="$orch_args --key-store-password '$WIZARD_KEY_STORE_PASS'"
+        [[ -n "$WIZARD_TRUST_STORE" ]] && orch_args="$orch_args --trust-store '$WIZARD_TRUST_STORE'"
+        [[ -n "$WIZARD_TRUST_STORE_PASS" ]] && orch_args="$orch_args --trust-store-password '$WIZARD_TRUST_STORE_PASS'"
+        [[ -n "$WIZARD_CLIENT_CERT" ]] && orch_args="$orch_args --client-cert '$WIZARD_CLIENT_CERT'"
+        [[ -n "$WIZARD_CLIENT_KEY" ]] && orch_args="$orch_args --client-key '$WIZARD_CLIENT_KEY'"
+        [[ -n "$WIZARD_CA_CERT" ]] && orch_args="$orch_args --ca-cert '$WIZARD_CA_CERT'"
+        [[ "$WIZARD_SKIP_CERT_VALIDATION" == "true" ]] && orch_args="$orch_args --skip-cert-validation"
+    fi
+
+    orch_args="$orch_args -d $dest_queue"
+    orch_args="$orch_args -w '$work_dir'"
+
+    [[ "$keep_files" == "true" ]] && orch_args="$orch_args --no-cleanup"
+    [[ "$verbose" == "true" ]] && orch_args="$orch_args --verbose"
+    [[ "$dry_run" == "true" ]] && orch_args="$orch_args --dry-run"
+
+    eval "${SCRIPT_DIR}/orchestrate-oracle.sh $orch_args"
+
+    wait_for_key
+}
+
+# -----------------------------------------------------------------------------
 # Queue Setup Wizard
 # -----------------------------------------------------------------------------
 
@@ -1099,15 +1255,16 @@ show_help() {
     cat << 'EOF'
 COMMANDS OVERVIEW
 
-  publish         Publish messages to a Solace queue
-  consume         Consume/browse messages from a queue
-  folder-publish  Batch publish files from a directory
-  copy-queue      Copy or move messages between queues
-  orchestration   Consume -> Transform -> Publish workflow
-  perf-test       Run performance tests
-  oracle-publish  Query Oracle -> Publish to Solace
-  oracle-export   Query Oracle -> Save to files
-  oracle-insert   Read files -> Insert to Oracle
+  publish              Publish messages to a Solace queue
+  consume              Consume/browse messages from a queue
+  folder-publish       Batch publish files from a directory
+  copy-queue           Copy or move messages between queues
+  orchestration        Consume -> Transform -> Publish workflow
+  oracle-orchestration Oracle Query -> Transform -> Publish workflow
+  perf-test            Run performance tests
+  oracle-publish       Query Oracle -> Publish to Solace
+  oracle-export        Query Oracle -> Save to files
+  oracle-insert        Read files -> Insert to Oracle
 
 COMMON OPTIONS
 
@@ -1171,17 +1328,20 @@ main_menu() {
         echo "    2) Consume messages"
         echo "    3) Folder publish (batch)"
         echo "    4) Copy/Move queue"
-        echo "    5) Orchestration (consume->transform->publish)"
+        echo ""
+        println_green "  Orchestration"
+        echo "    5) Queue orchestration (consume->transform->publish)"
+        echo "    6) Oracle orchestration (query->transform->publish)"
         echo ""
         println_green "  Testing"
-        echo "    6) Performance test"
+        echo "    7) Performance test"
         echo ""
         println_green "  Oracle Integration"
-        echo "    7) Oracle operations"
+        echo "    8) Oracle operations"
         echo ""
         println_green "  Setup"
-        echo "    8) Configure connection"
-        echo "    9) Queue setup (SEMP)"
+        echo "    9) Configure connection"
+        echo "    s) Queue setup (SEMP)"
         echo ""
         println_green "  Other"
         echo "    h) Help"
@@ -1225,16 +1385,22 @@ main_menu() {
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
-                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_perf_test
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_oracle_orchestration
                 ;;
             7)
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_perf_test
+                ;;
+            8)
+                if [[ "$WIZARD_CONNECTED" != "true" ]]; then
+                    setup_connection
+                fi
                 [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_oracle
                 ;;
-            8) setup_connection ;;
-            9) wizard_setup_queues ;;
+            9) setup_connection ;;
+            s|S) wizard_setup_queues ;;
             h|H) show_help ;;
             0|q|Q|exit)
                 echo ""
