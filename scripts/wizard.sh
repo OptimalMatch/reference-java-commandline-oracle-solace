@@ -782,6 +782,92 @@ wizard_perf_test() {
 }
 
 # -----------------------------------------------------------------------------
+# Test Orchestration Wizards
+# -----------------------------------------------------------------------------
+
+wizard_test_orchestration() {
+    print_menu_header "Test Queue Orchestration"
+
+    echo "This will run the automated test suite for queue orchestration."
+    echo ""
+    echo "The test will:"
+    echo "  - Start Solace Docker container (if not running)"
+    echo "  - Create Solace queues (if not configured)"
+    echo "  - Run 7 test steps covering basic, browse, dry-run, and batch operations"
+    echo "  - Clean up test files and queue messages"
+    echo ""
+
+    local skip_cleanup=false
+    local skip_solace=false
+
+    if prompt_yes_no "Skip cleanup after tests (keep files for inspection)?" "n"; then
+        skip_cleanup=true
+    fi
+
+    if prompt_yes_no "Skip Solace Docker/queue setup (use existing broker)?" "n"; then
+        skip_solace=true
+    fi
+
+    echo ""
+    println_yellow "Running test-orchestration.sh..."
+    echo ""
+
+    local args=""
+    [[ "$skip_cleanup" == "true" ]] && args="$args --skip-cleanup"
+    [[ "$skip_solace" == "true" ]] && args="$args --skip-solace-setup"
+
+    "${SCRIPT_DIR}/test-orchestration.sh" $args
+
+    wait_for_key
+}
+
+wizard_test_oracle_orchestration() {
+    print_menu_header "Test Oracle Orchestration"
+
+    echo "This will run the automated test suite for Oracle orchestration."
+    echo ""
+    echo "The test will:"
+    echo "  - Start Solace Docker container (if not running)"
+    echo "  - Create Solace queues (if not configured)"
+    echo "  - Start Oracle XE Docker container"
+    echo "  - Create test table with sample data"
+    echo "  - Run orchestration tests (basic, custom columns, dry-run)"
+    echo "  - Clean up Oracle container and test files"
+    echo ""
+    println_yellow "Note: First run may take a few minutes to pull the Oracle Docker image."
+    echo ""
+
+    local keep_oracle=false
+    local skip_cleanup=false
+    local skip_solace=false
+
+    if prompt_yes_no "Keep Oracle container after tests?" "n"; then
+        keep_oracle=true
+    fi
+
+    if prompt_yes_no "Skip cleanup of test files?" "n"; then
+        skip_cleanup=true
+    fi
+
+    if prompt_yes_no "Skip Solace Docker/queue setup (use existing broker)?" "n"; then
+        skip_solace=true
+    fi
+
+    echo ""
+    println_yellow "Running test-oracle-orchestration.sh..."
+    echo ""
+
+    local args=""
+    [[ "$keep_oracle" == "true" ]] && args="$args --keep-oracle"
+    [[ "$skip_cleanup" == "true" ]] && args="$args --skip-cleanup"
+    [[ "$skip_solace" == "true" ]] && args="$args --skip-solace-setup"
+
+    "${SCRIPT_DIR}/test-oracle-orchestration.sh" $args
+
+    wait_for_key
+}
+
+# -----------------------------------------------------------------------------
 # Oracle Wizard
 # -----------------------------------------------------------------------------
 
@@ -1335,6 +1421,8 @@ main_menu() {
         echo ""
         println_green "  Testing"
         echo "    7) Performance test"
+        echo "    t) Test queue orchestration"
+        echo "    o) Test Oracle orchestration"
         echo ""
         println_green "  Oracle Integration"
         echo "    8) Oracle operations"
@@ -1393,6 +1481,8 @@ main_menu() {
                 fi
                 [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_perf_test
                 ;;
+            t|T) wizard_test_orchestration ;;
+            o|O) wizard_test_oracle_orchestration ;;
             8)
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection

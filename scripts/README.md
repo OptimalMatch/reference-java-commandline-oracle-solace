@@ -40,6 +40,8 @@ What would you like to do?
 
   Testing
     7) Performance test
+    t) Test queue orchestration
+    o) Test Oracle orchestration
 
   Oracle Integration
     8) Oracle operations
@@ -66,6 +68,8 @@ Enter choice:
 | **5) Queue orchestration** | Consume → Transform → Publish workflow |
 | **6) Oracle orchestration** | Oracle Query → Transform → Publish workflow |
 | **7) Performance test** | Run throughput and latency benchmarks |
+| **t) Test queue orchestration** | Run automated test suite for queue orchestration |
+| **o) Test Oracle orchestration** | Run automated test suite for Oracle orchestration |
 | **8) Oracle operations** | Database integration (publish, export, insert) |
 | **9) Configure connection** | Change Solace host, VPN, credentials, and SSL/TLS settings |
 | **s) Queue setup** | Create/delete queues via SEMP API |
