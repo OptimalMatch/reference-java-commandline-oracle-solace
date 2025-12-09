@@ -527,30 +527,33 @@ Oracle-to-Solace orchestration: **Query → Transform → Publish**
 Automated test script for queue orchestration:
 
 ```bash
-# Run full test suite
+# Run full test suite (starts Solace Docker and configures queues automatically)
 ./test-orchestration.sh
 
 # Skip cleanup of test files and queue messages
 ./test-orchestration.sh --skip-cleanup
+
+# Skip Solace Docker/queue setup (use existing broker)
+./test-orchestration.sh --skip-solace-setup
 
 # Use custom queues
 SOURCE_QUEUE=my.source DEST_QUEUE=my.dest ./test-orchestration.sh
 ```
 
 **What it does:**
-1. Checks prerequisites (JAR, Solace broker connectivity)
-2. Tests basic orchestration (consume → transform → publish)
-3. Tests browse mode (non-destructive)
-4. Tests dry-run mode
-5. Tests correlation ID as filename
-6. Verifies messages in destination queue
-7. Tests larger batch (10 messages)
-8. Cleans up test files and drains queues
+1. Ensures Solace Docker container is running (starts if needed via `solace-docker.sh`)
+2. Ensures Solace queues are configured (creates if needed via `setup-solace.sh`)
+3. Tests basic orchestration (consume → transform → publish)
+4. Tests browse mode (non-destructive)
+5. Tests dry-run mode
+6. Tests correlation ID as filename
+7. Verifies messages in destination queue
+8. Tests larger batch (10 messages)
+9. Cleans up test files and drains queues
 
 **Prerequisites:**
-- Solace broker running (default: `tcp://localhost:55555`)
+- Docker installed and running
 - Project JAR built (`mvn clean package`)
-- Demo queues created (`./setup-solace.sh create`)
 
 **Sample Output:**
 ```
@@ -561,6 +564,13 @@ Configuration:
   Solace Host:      tcp://localhost:55555
   Source Queue:     demo.queue
   Destination Queue: demo.queue.backup
+
+Step 0: Checking Prerequisites
+[INFO] Solace CLI JAR: OK
+[INFO] Checking Solace Docker container...
+[INFO] Solace broker is already running
+[INFO] Checking Solace queues...
+[INFO] Solace queues are configured
 
 Step 1: Testing Basic Orchestration
 [INFO] Published 3 messages
@@ -589,7 +599,7 @@ Step 7: Cleanup
   Test Suite Complete
 =============================================================================
 [INFO] All tests passed!
-[INFO] Total duration: 30s
+[INFO] Total duration: 45s
 ```
 
 ### test-oracle-orchestration.sh
