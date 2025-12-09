@@ -938,6 +938,122 @@ wizard_oracle_insert() {
 }
 
 # -----------------------------------------------------------------------------
+# Orchestration Wizard
+# -----------------------------------------------------------------------------
+
+wizard_orchestration() {
+    print_menu_header "Message Orchestration"
+
+    echo "Orchestrate message flow: Consume -> Transform -> Publish"
+    echo ""
+    echo "This will:"
+    echo "  1. Consume messages from a source queue"
+    echo "  2. Save them to files in an input folder"
+    echo "  3. Transform each file (placeholder - customize as needed)"
+    echo "  4. Write transformed content to an output folder"
+    echo "  5. Publish transformed files to a destination queue"
+    echo ""
+
+    local source_queue dest_queue
+    prompt source_queue "Source queue (consume from)" "$WIZARD_SOLACE_QUEUE"
+    prompt dest_queue "Destination queue (publish to)" "output.queue"
+
+    if [[ -z "$source_queue" || -z "$dest_queue" ]]; then
+        println_red "Both source and destination queues are required"
+        wait_for_key
+        return
+    fi
+
+    local message_count timeout
+    prompt message_count "Number of messages to process (0=all)" "0"
+    prompt timeout "Consume timeout in seconds" "10"
+
+    local work_dir
+    prompt work_dir "Working directory" "/tmp/solace-orchestration"
+
+    # Processing options
+    local browse_only=false
+    local use_correlation=true
+    local dry_run=false
+    local verbose=false
+    local keep_files=false
+
+    echo ""
+    if prompt_yes_no "Browse only (don't remove messages from source)?" "n"; then
+        browse_only=true
+    fi
+
+    if prompt_yes_no "Use correlation ID as filename?" "y"; then
+        use_correlation=true
+    else
+        use_correlation=false
+    fi
+
+    if prompt_yes_no "Keep files after processing (no cleanup)?" "n"; then
+        keep_files=true
+    fi
+
+    if prompt_yes_no "Enable verbose output?" "n"; then
+        verbose=true
+    fi
+
+    if prompt_yes_no "Dry run (preview without executing)?" "n"; then
+        dry_run=true
+    fi
+
+    # Build and execute command
+    echo ""
+    println_yellow "Executing orchestration:"
+    echo ""
+
+    local display_cmd="orchestrate.sh"
+    display_cmd="$display_cmd -s $source_queue -d $dest_queue"
+    display_cmd="$display_cmd -n $message_count -t $timeout"
+    display_cmd="$display_cmd -w $work_dir"
+    [[ "$browse_only" == "true" ]] && display_cmd="$display_cmd --browse"
+    [[ "$use_correlation" == "false" ]] && display_cmd="$display_cmd --no-correlation"
+    [[ "$keep_files" == "true" ]] && display_cmd="$display_cmd --no-cleanup"
+    [[ "$verbose" == "true" ]] && display_cmd="$display_cmd --verbose"
+    [[ "$dry_run" == "true" ]] && display_cmd="$display_cmd --dry-run"
+
+    echo "$display_cmd"
+    echo ""
+
+    # Build actual command with connection args
+    local orch_args=""
+    orch_args="$orch_args -H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN"
+    [[ -n "$WIZARD_SOLACE_USER" ]] && orch_args="$orch_args -u $WIZARD_SOLACE_USER"
+    [[ -n "$WIZARD_SOLACE_PASS" ]] && orch_args="$orch_args -p '$WIZARD_SOLACE_PASS'"
+
+    # Add SSL args if enabled
+    if [[ "$WIZARD_USE_SSL" == "true" ]]; then
+        orch_args="$orch_args --ssl"
+        [[ -n "$WIZARD_KEY_STORE" ]] && orch_args="$orch_args --key-store '$WIZARD_KEY_STORE'"
+        [[ -n "$WIZARD_KEY_STORE_PASS" ]] && orch_args="$orch_args --key-store-password '$WIZARD_KEY_STORE_PASS'"
+        [[ -n "$WIZARD_TRUST_STORE" ]] && orch_args="$orch_args --trust-store '$WIZARD_TRUST_STORE'"
+        [[ -n "$WIZARD_TRUST_STORE_PASS" ]] && orch_args="$orch_args --trust-store-password '$WIZARD_TRUST_STORE_PASS'"
+        [[ -n "$WIZARD_CLIENT_CERT" ]] && orch_args="$orch_args --client-cert '$WIZARD_CLIENT_CERT'"
+        [[ -n "$WIZARD_CLIENT_KEY" ]] && orch_args="$orch_args --client-key '$WIZARD_CLIENT_KEY'"
+        [[ -n "$WIZARD_CA_CERT" ]] && orch_args="$orch_args --ca-cert '$WIZARD_CA_CERT'"
+        [[ "$WIZARD_SKIP_CERT_VALIDATION" == "true" ]] && orch_args="$orch_args --skip-cert-validation"
+    fi
+
+    orch_args="$orch_args -s $source_queue -d $dest_queue"
+    orch_args="$orch_args -n $message_count -t $timeout"
+    orch_args="$orch_args -w '$work_dir'"
+
+    [[ "$browse_only" == "true" ]] && orch_args="$orch_args --browse"
+    [[ "$use_correlation" == "false" ]] && orch_args="$orch_args --no-correlation"
+    [[ "$keep_files" == "true" ]] && orch_args="$orch_args --no-cleanup"
+    [[ "$verbose" == "true" ]] && orch_args="$orch_args --verbose"
+    [[ "$dry_run" == "true" ]] && orch_args="$orch_args --dry-run"
+
+    eval "${SCRIPT_DIR}/orchestrate.sh $orch_args"
+
+    wait_for_key
+}
+
+# -----------------------------------------------------------------------------
 # Queue Setup Wizard
 # -----------------------------------------------------------------------------
 
@@ -987,6 +1103,7 @@ COMMANDS OVERVIEW
   consume         Consume/browse messages from a queue
   folder-publish  Batch publish files from a directory
   copy-queue      Copy or move messages between queues
+  orchestration   Consume -> Transform -> Publish workflow
   perf-test       Run performance tests
   oracle-publish  Query Oracle -> Publish to Solace
   oracle-export   Query Oracle -> Save to files
@@ -1054,19 +1171,20 @@ main_menu() {
         echo "    2) Consume messages"
         echo "    3) Folder publish (batch)"
         echo "    4) Copy/Move queue"
+        echo "    5) Orchestration (consume->transform->publish)"
         echo ""
         println_green "  Testing"
-        echo "    5) Performance test"
+        echo "    6) Performance test"
         echo ""
         println_green "  Oracle Integration"
-        echo "    6) Oracle operations"
+        echo "    7) Oracle operations"
         echo ""
         println_green "  Setup"
-        echo "    7) Configure connection"
-        echo "    8) Queue setup (SEMP)"
+        echo "    8) Configure connection"
+        echo "    9) Queue setup (SEMP)"
         echo ""
         println_green "  Other"
-        echo "    9) Help"
+        echo "    h) Help"
         echo "    0) Exit"
         echo ""
 
@@ -1101,17 +1219,23 @@ main_menu() {
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
-                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_perf_test
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_orchestration
                 ;;
             6)
                 if [[ "$WIZARD_CONNECTED" != "true" ]]; then
                     setup_connection
                 fi
+                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_perf_test
+                ;;
+            7)
+                if [[ "$WIZARD_CONNECTED" != "true" ]]; then
+                    setup_connection
+                fi
                 [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_oracle
                 ;;
-            7) setup_connection ;;
-            8) wizard_setup_queues ;;
-            9) show_help ;;
+            8) setup_connection ;;
+            9) wizard_setup_queues ;;
+            h|H) show_help ;;
             0|q|Q|exit)
                 echo ""
                 echo "Goodbye!"
