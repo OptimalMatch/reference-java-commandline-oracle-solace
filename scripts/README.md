@@ -522,6 +522,76 @@ Oracle-to-Solace orchestration: **Query → Transform → Publish**
 | `-d, --dest-queue` | Destination Solace queue |
 | `--dry-run` | Preview without executing |
 
+### test-orchestration.sh
+
+Automated test script for queue orchestration:
+
+```bash
+# Run full test suite
+./test-orchestration.sh
+
+# Skip cleanup of test files and queue messages
+./test-orchestration.sh --skip-cleanup
+
+# Use custom queues
+SOURCE_QUEUE=my.source DEST_QUEUE=my.dest ./test-orchestration.sh
+```
+
+**What it does:**
+1. Checks prerequisites (JAR, Solace broker connectivity)
+2. Tests basic orchestration (consume → transform → publish)
+3. Tests browse mode (non-destructive)
+4. Tests dry-run mode
+5. Tests correlation ID as filename
+6. Verifies messages in destination queue
+7. Tests larger batch (10 messages)
+8. Cleans up test files and drains queues
+
+**Prerequisites:**
+- Solace broker running (default: `tcp://localhost:55555`)
+- Project JAR built (`mvn clean package`)
+- Demo queues created (`./setup-solace.sh create`)
+
+**Sample Output:**
+```
+=============================================================================
+  Queue Orchestration Test Suite
+=============================================================================
+Configuration:
+  Solace Host:      tcp://localhost:55555
+  Source Queue:     demo.queue
+  Destination Queue: demo.queue.backup
+
+Step 1: Testing Basic Orchestration
+[INFO] Published 3 messages
+[INFO] Transform complete: 3 succeeded, 0 failed
+[INFO] Published 3 message(s) successfully
+
+Step 2: Testing Browse Mode (Non-Destructive)
+[INFO] Browse mode verified: messages not removed from source queue
+
+Step 3: Testing Dry Run Mode
+[INFO] Dry run verified: no input files created
+
+Step 4: Testing Correlation ID as Filename
+[INFO] Correlation ID filenames verified (ORDER-001.txt, ORDER-002.txt)
+
+Step 5: Verifying Destination Queue
+[INFO] Browsed messages successfully
+
+Step 6: Testing Larger Batch
+[INFO] Batch test passed: all 10 messages processed
+
+Step 7: Cleanup
+[INFO] Cleanup complete
+
+=============================================================================
+  Test Suite Complete
+=============================================================================
+[INFO] All tests passed!
+[INFO] Total duration: 30s
+```
+
 ### test-oracle-orchestration.sh
 
 Automated test script for Oracle orchestration:
