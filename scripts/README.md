@@ -34,18 +34,22 @@ What would you like to do?
     3) Folder publish (batch)
     4) Copy/Move queue
 
+  Orchestration
+    5) Queue orchestration (consume->transform->publish)
+    6) Oracle orchestration (query->transform->publish)
+
   Testing
-    5) Performance test
+    7) Performance test
 
   Oracle Integration
-    6) Oracle operations
+    8) Oracle operations
 
   Setup
-    7) Configure connection
-    8) Queue setup (SEMP)
+    9) Configure connection
+    s) Queue setup (SEMP)
 
   Other
-    9) Help
+    h) Help
     0) Exit
 
 Enter choice:
@@ -59,10 +63,12 @@ Enter choice:
 | **2) Consume messages** | Receive messages with browse, consume, or no-ack modes |
 | **3) Folder publish** | Batch publish all files from a directory |
 | **4) Copy/Move queue** | Transfer messages between queues |
-| **5) Performance test** | Run throughput and latency benchmarks |
-| **6) Oracle operations** | Database integration (publish, export, insert) |
-| **7) Configure connection** | Change Solace host, VPN, credentials, and SSL/TLS settings |
-| **8) Queue setup** | Create/delete queues via SEMP API |
+| **5) Queue orchestration** | Consume → Transform → Publish workflow |
+| **6) Oracle orchestration** | Oracle Query → Transform → Publish workflow |
+| **7) Performance test** | Run throughput and latency benchmarks |
+| **8) Oracle operations** | Database integration (publish, export, insert) |
+| **9) Configure connection** | Change Solace host, VPN, credentials, and SSL/TLS settings |
+| **s) Queue setup** | Create/delete queues via SEMP API |
 
 ### Example: Publishing Messages
 
@@ -218,6 +224,10 @@ The wizard automatically:
 | `wizard.sh` | **Interactive wizard** - guided menu-driven interface |
 | `common.sh` | Shared configuration and helper functions (source this) |
 | `setup-solace.sh` | Create/delete queues via SEMP API |
+| `solace-docker.sh` | Start/stop local Solace broker Docker container |
+| `orchestrate.sh` | **Orchestration** - Consume → Transform → Publish workflow |
+| `orchestrate-oracle.sh` | **Oracle Orchestration** - Query → Transform → Publish workflow |
+| `test-oracle-orchestration.sh` | Test script for Oracle orchestration (starts Oracle Docker) |
 | `examples-publish.sh` | Basic message publishing examples |
 | `examples-consume.sh` | Message consuming examples |
 | `examples-folder-publish.sh` | Batch publish from directory |
@@ -407,6 +417,184 @@ Demonstrates pattern filtering:
 - Regex patterns (`regex:`)
 - Content-based exclusion
 - Command coverage table
+
+## Orchestration Scripts
+
+### orchestrate.sh
+
+End-to-end message orchestration: **Consume → Transform → Publish**
+
+```bash
+# Basic usage
+./orchestrate.sh -s source.queue -d dest.queue
+
+# With all options
+./orchestrate.sh \
+  -H tcp://localhost:55555 \
+  -v default \
+  -u admin \
+  -p admin \
+  -s input.queue \
+  -d output.queue \
+  -n 100 \
+  -t 30 \
+  --verbose \
+  --no-cleanup
+```
+
+**Workflow:**
+1. **Consume** - Read messages from source queue, save to files
+2. **Transform** - Apply customizable transformation to each file
+3. **Publish** - Send transformed files to destination queue
+
+**Key Options:**
+| Option | Description |
+|--------|-------------|
+| `-s, --source-queue` | Source queue to consume from |
+| `-d, --dest-queue` | Destination queue to publish to |
+| `-n, --count` | Number of messages to process (0=all) |
+| `-t, --timeout` | Consume timeout in seconds |
+| `--browse` | Browse only (non-destructive) |
+| `-w, --work-dir` | Working directory for files |
+| `--dry-run` | Preview without executing |
+| `--verbose` | Enable verbose output |
+| `--no-cleanup` | Keep files after processing |
+| `--config` | Load settings from config file |
+
+**Customizing the Transform:**
+
+Edit the `transform_message()` function in `orchestrate.sh`:
+
+```bash
+transform_message() {
+    local input_file="$1"
+    local output_file="$2"
+
+    # Example: Add JSON wrapper
+    echo '{"transformed": true, "data":' > "$output_file"
+    cat "$input_file" >> "$output_file"
+    echo '}' >> "$output_file"
+}
+```
+
+### orchestrate-oracle.sh
+
+Oracle-to-Solace orchestration: **Query → Transform → Publish**
+
+```bash
+# Basic usage
+./orchestrate-oracle.sh \
+  --sql "SELECT payload FROM messages" \
+  -d output.queue
+
+# With custom columns
+./orchestrate-oracle.sh \
+  --db-host localhost \
+  --db-port 1521 \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT id, content FROM orders" \
+  --message-column content \
+  --filename-column id \
+  -H tcp://localhost:55555 \
+  -d orders.queue \
+  --verbose
+```
+
+**Workflow:**
+1. **Oracle Export** - Execute SQL query, save each row as a file
+2. **Transform** - Apply customizable transformation to each file
+3. **Publish** - Send transformed files to Solace queue
+
+**Key Options:**
+| Option | Description |
+|--------|-------------|
+| `--db-host` | Oracle database host |
+| `--db-port` | Oracle database port (default: 1521) |
+| `--db-service` | Oracle service name or SID |
+| `--db-user` | Database username |
+| `--db-password` | Database password |
+| `-s, --sql` | SQL SELECT statement |
+| `-f, --sql-file` | SQL file path |
+| `-m, --message-column` | Column containing message content |
+| `--filename-column` | Column to use as filename |
+| `-d, --dest-queue` | Destination Solace queue |
+| `--dry-run` | Preview without executing |
+
+### test-oracle-orchestration.sh
+
+Automated test script for Oracle orchestration:
+
+```bash
+# Run full test suite (starts Oracle Docker automatically)
+./test-oracle-orchestration.sh
+
+# Keep Oracle container running after tests
+./test-oracle-orchestration.sh --keep-oracle
+
+# Skip cleanup of test files
+./test-oracle-orchestration.sh --skip-cleanup
+
+# Use custom test queue
+TEST_QUEUE=my.test.queue ./test-oracle-orchestration.sh
+```
+
+**What it does:**
+1. Starts Oracle XE Docker container (`gvenzl/oracle-xe:21-slim`)
+2. Creates test table with 5 sample order records
+3. Tests basic orchestration (default column mapping)
+4. Tests custom column mapping (order_id as filename)
+5. Verifies messages in Solace queue
+6. Tests dry-run mode
+7. Cleans up Oracle container and test files
+
+**Prerequisites:**
+- Docker installed and running
+- Solace broker running (default: `tcp://localhost:55555`)
+- Project JAR built (`mvn clean package`)
+
+**Sample Output:**
+```
+=============================================================================
+  Oracle Orchestration Test Suite
+=============================================================================
+Configuration:
+  Oracle Container: oracle-orchestration-test
+  Oracle Port:      1522
+  Oracle Service:   XEPDB1
+  Solace Host:      tcp://localhost:55555
+  Test Queue:       demo.queue
+
+Step 1: Starting Oracle XE Container
+[INFO] Oracle is ready!
+
+Step 2: Creating Test Data
+[INFO] Test data created successfully (5 rows)
+
+Step 3: Testing Basic Oracle Orchestration
+[INFO] Exported 5 row(s) to files
+[INFO] Transform complete: 5 succeeded, 0 failed
+[INFO] Published 5 message(s) successfully
+
+Step 4: Testing Custom Column Mapping
+[INFO] Files named by order_id: ORD-001.txt, ORD-002.txt, ...
+
+Step 5: Verifying Messages in Solace Queue
+[INFO] Browsed 10 message(s)
+
+Step 6: Testing Dry Run Mode
+[INFO] Dry run completed (no actual changes made)
+
+Step 7: Cleanup
+[INFO] Oracle container removed
+
+=============================================================================
+  Test Suite Complete
+=============================================================================
+[INFO] All tests passed!
+[INFO] Total duration: 25s
+```
 
 ## Running All Examples
 
