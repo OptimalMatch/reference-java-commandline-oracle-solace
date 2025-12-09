@@ -3,19 +3,20 @@
 # Test Script for Oracle Orchestration
 # =============================================================================
 # This script tests the orchestrate-oracle.sh script by:
-#   1. Starting an Oracle XE Docker container
-#   2. Creating a test table with sample data
-#   3. Running the Oracle orchestration to export, transform, and publish
-#   4. Verifying the messages in the Solace queue
-#   5. Cleaning up
+#   1. Ensuring Solace Docker container is running
+#   2. Ensuring Solace queues are configured
+#   3. Starting an Oracle XE Docker container
+#   4. Creating a test table with sample data
+#   5. Running the Oracle orchestration to export, transform, and publish
+#   6. Verifying the messages in the Solace queue
+#   7. Cleaning up
 #
 # Prerequisites:
 #   - Docker installed and running
-#   - Solace broker running (default: tcp://localhost:55555)
 #   - Project JAR built (mvn clean package)
 #
 # Usage:
-#   ./test-oracle-orchestration.sh [--keep-oracle] [--skip-cleanup]
+#   ./test-oracle-orchestration.sh [--keep-oracle] [--skip-cleanup] [--skip-solace-setup]
 #
 # =============================================================================
 
@@ -44,6 +45,7 @@ TEST_QUEUE="${TEST_QUEUE:-demo.queue}"  # Use existing queue or specify with TES
 
 KEEP_ORACLE=false
 SKIP_CLEANUP=false
+SKIP_SOLACE_SETUP=false
 
 # -----------------------------------------------------------------------------
 # Parse Arguments
@@ -59,12 +61,17 @@ while [[ $# -gt 0 ]]; do
             SKIP_CLEANUP=true
             shift
             ;;
+        --skip-solace-setup)
+            SKIP_SOLACE_SETUP=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [--keep-oracle] [--skip-cleanup]"
+            echo "Usage: $0 [--keep-oracle] [--skip-cleanup] [--skip-solace-setup]"
             echo ""
             echo "Options:"
-            echo "  --keep-oracle    Don't stop/remove Oracle container after test"
-            echo "  --skip-cleanup   Don't clean up test files and queue messages"
+            echo "  --keep-oracle        Don't stop/remove Oracle container after test"
+            echo "  --skip-cleanup       Don't clean up test files and queue messages"
+            echo "  --skip-solace-setup  Skip Solace Docker and queue setup checks"
             exit 0
             ;;
         *)
@@ -73,6 +80,73 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# -----------------------------------------------------------------------------
+# Solace Setup Functions
+# -----------------------------------------------------------------------------
+
+ensure_solace_docker() {
+    if [[ "$SKIP_SOLACE_SETUP" == "true" ]]; then
+        info "Skipping Solace Docker setup (--skip-solace-setup specified)"
+        return 0
+    fi
+
+    info "Checking Solace Docker container..."
+
+    # Check if solace-docker.sh exists
+    if [[ ! -x "${SCRIPT_DIR}/solace-docker.sh" ]]; then
+        error "solace-docker.sh not found or not executable"
+        exit 1
+    fi
+
+    # Check if container is running by checking SEMP API connectivity
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -u "admin:admin" "http://localhost:8080/SEMP/v2/config/msgVpns/default" 2>/dev/null || echo "000")
+
+    if [[ "$http_code" == "200" ]]; then
+        info "Solace broker is already running"
+        return 0
+    fi
+
+    # Try to start the Solace container (solace-docker.sh handles waiting for broker to be ready)
+    info "Starting Solace Docker container..."
+    "${SCRIPT_DIR}/solace-docker.sh" start
+
+    info "Solace Docker container is running"
+}
+
+ensure_solace_queues() {
+    if [[ "$SKIP_SOLACE_SETUP" == "true" ]]; then
+        info "Skipping Solace queue setup (--skip-solace-setup specified)"
+        return 0
+    fi
+
+    info "Checking Solace queues..."
+
+    # Check if setup-solace.sh exists
+    if [[ ! -x "${SCRIPT_DIR}/setup-solace.sh" ]]; then
+        error "setup-solace.sh not found or not executable"
+        exit 1
+    fi
+
+    # Check if queues exist by trying to browse test queue
+    if solace_cli consume -H "$SOLACE_HOST" -v "$SOLACE_VPN" -u "$SOLACE_USER" -p "$SOLACE_PASS" -q "$TEST_QUEUE" --browse -n 0 -t 2 &>/dev/null; then
+        info "Solace queues are configured"
+        return 0
+    fi
+
+    # Queues don't exist, create them
+    info "Creating Solace queues..."
+    "${SCRIPT_DIR}/setup-solace.sh" create
+
+    # Verify queues are now accessible
+    if ! solace_cli consume -H "$SOLACE_HOST" -v "$SOLACE_VPN" -u "$SOLACE_USER" -p "$SOLACE_PASS" -q "$TEST_QUEUE" --browse -n 0 -t 2 &>/dev/null; then
+        error "Failed to create Solace queues"
+        exit 1
+    fi
+
+    info "Solace queues are configured"
+}
 
 # -----------------------------------------------------------------------------
 # Helper Functions
@@ -132,23 +206,30 @@ step_check_prerequisites() {
         error "Docker is not installed"
         exit 1
     fi
+
+    if ! docker info &> /dev/null; then
+        error "Docker daemon is not running"
+        exit 1
+    fi
     info "Docker: OK"
 
     # Check JAR
     check_jar
     info "Solace CLI JAR: OK"
 
-    # Check Solace connectivity
-    info "Testing Solace connection at $SOLACE_HOST..."
-    if solace_cli consume -H "$SOLACE_HOST" -v "$SOLACE_VPN" -u "$SOLACE_USER" -p "$SOLACE_PASS" -q demo.queue --browse -n 0 -t 2 &>/dev/null; then
+    # Ensure Solace Docker is running
+    ensure_solace_docker
+
+    # Ensure Solace queues are configured
+    ensure_solace_queues
+
+    # Final connectivity check
+    info "Verifying Solace connection at $SOLACE_HOST..."
+    if solace_cli consume -H "$SOLACE_HOST" -v "$SOLACE_VPN" -u "$SOLACE_USER" -p "$SOLACE_PASS" -q "$TEST_QUEUE" --browse -n 0 -t 2 &>/dev/null; then
         info "Solace broker: OK"
     else
-        warn "Could not verify Solace connection (broker may not be running)"
-        echo "  Expected: $SOLACE_HOST"
-        read -p "Continue anyway? [y/N]: " answer
-        if [[ "${answer,,}" != "y" ]]; then
-            exit 1
-        fi
+        error "Could not connect to Solace broker at $SOLACE_HOST"
+        exit 1
     fi
 }
 

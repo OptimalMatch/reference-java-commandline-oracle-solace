@@ -607,7 +607,7 @@ Step 7: Cleanup
 Automated test script for Oracle orchestration:
 
 ```bash
-# Run full test suite (starts Oracle Docker automatically)
+# Run full test suite (starts Solace and Oracle Docker automatically)
 ./test-oracle-orchestration.sh
 
 # Keep Oracle container running after tests
@@ -616,22 +616,26 @@ Automated test script for Oracle orchestration:
 # Skip cleanup of test files
 ./test-oracle-orchestration.sh --skip-cleanup
 
+# Skip Solace Docker/queue setup (use existing broker)
+./test-oracle-orchestration.sh --skip-solace-setup
+
 # Use custom test queue
 TEST_QUEUE=my.test.queue ./test-oracle-orchestration.sh
 ```
 
 **What it does:**
-1. Starts Oracle XE Docker container (`gvenzl/oracle-xe:21-slim`)
-2. Creates test table with 5 sample order records
-3. Tests basic orchestration (default column mapping)
-4. Tests custom column mapping (order_id as filename)
-5. Verifies messages in Solace queue
-6. Tests dry-run mode
-7. Cleans up Oracle container and test files
+1. Ensures Solace Docker container is running (starts if needed via `solace-docker.sh`)
+2. Ensures Solace queues are configured (creates if needed via `setup-solace.sh`)
+3. Starts Oracle XE Docker container (`gvenzl/oracle-xe:21-slim`)
+4. Creates test table with 5 sample order records
+5. Tests basic orchestration (default column mapping)
+6. Tests custom column mapping (order_id as filename)
+7. Verifies messages in Solace queue
+8. Tests dry-run mode
+9. Cleans up Oracle container and test files
 
 **Prerequisites:**
 - Docker installed and running
-- Solace broker running (default: `tcp://localhost:55555`)
 - Project JAR built (`mvn clean package`)
 
 **Sample Output:**
@@ -645,6 +649,14 @@ Configuration:
   Oracle Service:   XEPDB1
   Solace Host:      tcp://localhost:55555
   Test Queue:       demo.queue
+
+Step 0: Checking Prerequisites
+[INFO] Docker: OK
+[INFO] Solace CLI JAR: OK
+[INFO] Checking Solace Docker container...
+[INFO] Solace broker is already running
+[INFO] Checking Solace queues...
+[INFO] Solace queues are configured
 
 Step 1: Starting Oracle XE Container
 [INFO] Oracle is ready!
@@ -673,7 +685,7 @@ Step 7: Cleanup
   Test Suite Complete
 =============================================================================
 [INFO] All tests passed!
-[INFO] Total duration: 25s
+[INFO] Total duration: 45s
 ```
 
 ## Running All Examples
