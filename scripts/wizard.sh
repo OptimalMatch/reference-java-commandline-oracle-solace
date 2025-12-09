@@ -412,8 +412,18 @@ setup_connection() {
 wizard_publish() {
     print_menu_header "Publish Message"
 
-    local queue
-    prompt queue "Target queue" "$WIZARD_SOLACE_QUEUE"
+    # Destination type selection
+    echo ""
+    select_option "Publish to:" "Queue" "Topic"
+    local dest_type=$?
+
+    local queue=""
+    local topic=""
+    if [[ $dest_type -eq 0 ]]; then
+        prompt queue "Target queue" "$WIZARD_SOLACE_QUEUE"
+    else
+        prompt topic "Target topic" "my/sample/topic"
+    fi
 
     echo ""
     echo "Message source:"
@@ -473,7 +483,9 @@ wizard_publish() {
     local display_cmd="solace-cli publish -H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN"
     [[ -n "$WIZARD_SOLACE_USER" ]] && display_cmd="$display_cmd -u $WIZARD_SOLACE_USER -p ****"
     [[ "$WIZARD_USE_SSL" == "true" ]] && display_cmd="$display_cmd --ssl [cert options...]"
-    display_cmd="$display_cmd -q $queue"
+    # Show queue (required param) and topic if publishing to topic
+    display_cmd="$display_cmd -q ${queue:-$WIZARD_SOLACE_QUEUE}"
+    [[ -n "$topic" ]] && display_cmd="$display_cmd -T $topic"
     [[ -n "$message_file" ]] && display_cmd="$display_cmd -f $message_file"
     [[ $message_count -gt 1 ]] && display_cmd="$display_cmd -c $message_count"
     [[ -n "$correlation_id" ]] && display_cmd="$display_cmd --correlation-id $correlation_id"
@@ -488,7 +500,9 @@ wizard_publish() {
     # Execute command
     local args
     args=$(build_connection_args)
-    args="$args -q $queue"
+    # Queue is required by ConnectionOptions, use provided queue or default
+    args="$args -q ${queue:-$WIZARD_SOLACE_QUEUE}"
+    [[ -n "$topic" ]] && args="$args -T '$topic'"
     [[ -n "$message_file" ]] && args="$args -f '$message_file'"
     [[ $message_count -gt 1 ]] && args="$args -c $message_count"
     [[ -n "$correlation_id" ]] && args="$args --correlation-id '$correlation_id'"
@@ -1341,7 +1355,7 @@ show_help() {
     cat << 'EOF'
 COMMANDS OVERVIEW
 
-  publish              Publish messages to a Solace queue
+  publish              Publish messages to a Solace queue or topic
   consume              Consume/browse messages from a queue
   folder-publish       Batch publish files from a directory
   copy-queue           Copy or move messages between queues
@@ -1359,6 +1373,7 @@ COMMON OPTIONS
   -u, --username  Authentication username (optional with cert auth)
   -p, --password  Authentication password
   -q, --queue     Queue name
+  -T, --topic     Topic name (publish command only, overrides -q)
 
 SSL/TLS OPTIONS
 

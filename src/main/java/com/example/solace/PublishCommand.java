@@ -1,6 +1,7 @@
 package com.example.solace;
 
 import com.solacesystems.jcsmp.*;
+import com.solacesystems.jcsmp.Destination;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
@@ -20,7 +21,7 @@ import static com.example.solace.AuditLogger.maskSensitive;
 @Command(
     name = "publish",
     aliases = {"pub", "send"},
-    description = "Publish a message to a Solace queue",
+    description = "Publish a message to a Solace queue or topic",
     mixinStandardHelpOptions = true
 )
 public class PublishCommand implements Callable<Integer> {
@@ -62,6 +63,10 @@ public class PublishCommand implements Callable<Integer> {
             description = "Also publish to this second queue (fan-out)")
     String secondQueue;
 
+    @Option(names = {"-T", "--topic"},
+            description = "Publish to a topic instead of the queue specified by -q")
+    String topic;
+
     @Option(names = {"--failed-dir"},
             description = "Directory to save failed messages for later retry")
     File failedDir;
@@ -90,6 +95,7 @@ public class PublishCommand implements Callable<Integer> {
              .addParameter("username", connection.username)
              .addParameter("password", maskSensitive(connection.password))
              .addParameter("queue", connection.queue)
+             .addParameter("topic", topic)
              .addParameter("count", count)
              .addParameter("deliveryMode", deliveryMode)
              .addParameter("ttl", ttl)
@@ -136,7 +142,19 @@ public class PublishCommand implements Callable<Integer> {
             session = SolaceConnection.createSession(connection);
             System.out.println("Connected successfully");
 
-            Queue queue = JCSMPFactory.onlyInstance().createQueue(connection.queue);
+            // Determine primary destination: topic takes precedence if specified
+            Destination destination;
+            String destinationName;
+            String destinationType;
+            if (topic != null) {
+                destination = JCSMPFactory.onlyInstance().createTopic(topic);
+                destinationName = topic;
+                destinationType = "topic";
+            } else {
+                destination = JCSMPFactory.onlyInstance().createQueue(connection.queue);
+                destinationName = connection.queue;
+                destinationType = "queue";
+            }
             Queue queue2 = (secondQueue != null) ? JCSMPFactory.onlyInstance().createQueue(secondQueue) : null;
 
             producer = session.getMessageProducer(new JCSMPStreamingPublishCorrelatingEventHandler() {
@@ -188,13 +206,13 @@ public class PublishCommand implements Callable<Integer> {
                         msg.setTimeToLive(ttl);
                     }
 
-                    producer.send(msg, queue);
+                    producer.send(msg, destination);
                     retrySuccessCount++;
 
                     if (showProgress) {
                         progress.increment();
                     } else {
-                        System.out.println("Retried message to queue '" + connection.queue + "'" +
+                        System.out.println("Retried message to " + destinationType + " '" + destinationName + "'" +
                             (msgCorrelationId != null ? " [" + msgCorrelationId + "]" : ""));
                     }
 
@@ -215,7 +233,7 @@ public class PublishCommand implements Callable<Integer> {
                     System.err.println("Failed to retry message: " + e.getMessage());
 
                     // Save to failed dir if enabled (message stays for next retry attempt)
-                    failedHandler.saveFailedMessage(msgContent, msgCorrelationId, connection.queue,
+                    failedHandler.saveFailedMessage(msgContent, msgCorrelationId, destinationName,
                         e.getMessage(), failedCount);
                 }
             }
@@ -242,14 +260,14 @@ public class PublishCommand implements Callable<Integer> {
                             msg.setTimeToLive(ttl);
                         }
 
-                        producer.send(msg, queue);
+                        producer.send(msg, destination);
                         successCount++;
 
                         if (showProgress) {
                             progress.increment();
                         } else {
                             String msgId = (count > 1) ? " [" + (i + 1) + "/" + count + "]" : "";
-                            System.out.println("Published message to queue '" + connection.queue + "'" + msgId);
+                            System.out.println("Published message to " + destinationType + " '" + destinationName + "'" + msgId);
                         }
 
                         if (queue2 != null) {
@@ -274,7 +292,7 @@ public class PublishCommand implements Callable<Integer> {
                         }
 
                         // Save failed message if directory specified
-                        failedHandler.saveFailedMessage(content, msgCorrelationId, connection.queue,
+                        failedHandler.saveFailedMessage(content, msgCorrelationId, destinationName,
                             e.getMessage(), i);
                     }
                 }
@@ -288,12 +306,12 @@ public class PublishCommand implements Callable<Integer> {
             // Print summary
             int totalSuccess = successCount + retrySuccessCount;
             int totalMessages = (queue2 != null) ? totalSuccess * 2 : totalSuccess;
-            String queueInfo = (queue2 != null) ? " to 2 queues" : "";
+            String destInfo = (queue2 != null) ? " to " + destinationType + " and second queue" : "";
 
             if (failedCount == 0) {
-                System.out.println("Successfully published " + totalMessages + " message(s)" + queueInfo);
+                System.out.println("Successfully published " + totalMessages + " message(s)" + destInfo);
             } else {
-                System.out.println("Published " + totalMessages + " message(s)" + queueInfo +
+                System.out.println("Published " + totalMessages + " message(s)" + destInfo +
                     ", " + failedCount + " failed");
                 if (failedHandler.isSaveEnabled()) {
                     System.out.println("Failed messages saved to: " + failedDir.getAbsolutePath());
@@ -310,7 +328,8 @@ public class PublishCommand implements Callable<Integer> {
                  .addResult("messagesFailed", failedCount)
                  .addResult("retryAttempted", retryCount)
                  .addResult("retrySucceeded", retrySuccessCount)
-                 .addResult("queuesUsed", (queue2 != null) ? 2 : 1);
+                 .addResult("destinationType", destinationType)
+                 .addResult("destinationsUsed", (queue2 != null) ? 2 : 1);
 
             if (!failedMessageIds.isEmpty()) {
                 audit.addResult("failedMessageIds", failedMessageIds);
