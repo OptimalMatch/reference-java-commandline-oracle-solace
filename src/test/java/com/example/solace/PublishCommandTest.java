@@ -128,4 +128,100 @@ public class PublishCommandTest {
         String output = sw.toString();
         assertTrue("publish command should be listed", output.contains("publish"));
     }
+
+    @Test
+    public void testTopicOption() {
+        PublishCommand command = new PublishCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "Test message",
+            "-H", "tcp://localhost:55555",
+            "-v", "default",
+            "-u", "user",
+            "-p", "pass",
+            "-q", "test-queue",
+            "-T", "my/test/topic"
+        );
+
+        assertEquals("my/test/topic", command.topic);
+        assertEquals("test-queue", command.connection.queue);
+    }
+
+    @Test
+    public void testTopicLongOption() {
+        PublishCommand command = new PublishCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "Test message",
+            "-H", "tcp://localhost:55555",
+            "-v", "default",
+            "-u", "user",
+            "-p", "pass",
+            "-q", "test-queue",
+            "--topic", "orders/new/customer"
+        );
+
+        assertEquals("orders/new/customer", command.topic);
+    }
+
+    @Test
+    public void testTopicDefaultValue() {
+        PublishCommand command = new PublishCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "Test message",
+            "-H", "tcp://localhost:55555",
+            "-v", "default",
+            "-u", "user",
+            "-p", "pass",
+            "-q", "test-queue"
+        );
+
+        assertNull("topic should be null by default", command.topic);
+    }
+
+    @Test
+    public void testTopicWithOtherOptions() {
+        PublishCommand command = new PublishCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "Test message",
+            "-H", "tcp://localhost:55555",
+            "-v", "default",
+            "-u", "user",
+            "-p", "pass",
+            "-q", "test-queue",
+            "-T", "events/processed",
+            "--correlation-id", "corr-456",
+            "--delivery-mode", "DIRECT",
+            "-Q", "backup-queue"
+        );
+
+        assertEquals("events/processed", command.topic);
+        assertEquals("corr-456", command.correlationId);
+        assertEquals("DIRECT", command.deliveryMode);
+        assertEquals("backup-queue", command.secondQueue);
+    }
+
+    @Test
+    public void testHelpOutputIncludesTopic() {
+        PublishCommand command = new PublishCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        String usage = cmdLine.getUsageMessage();
+        assertTrue("--topic option should be in help", usage.contains("--topic"));
+        assertTrue("-T option should be in help", usage.contains("-T"));
+    }
+
+    @Test
+    public void testDescriptionIncludesTopic() {
+        CommandLine.Command annotation = PublishCommand.class.getAnnotation(CommandLine.Command.class);
+        String description = annotation.description()[0];
+
+        assertTrue("description should mention topic", description.toLowerCase().contains("topic"));
+    }
 }
