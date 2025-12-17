@@ -55,6 +55,16 @@ public class ConnectionOptions {
             arity = "0..1")
     String keyStorePassword;
 
+    @Option(names = {"--key-password"},
+            description = "Password for private key (if different from key store password)",
+            interactive = true,
+            arity = "0..1")
+    String keyPassword;
+
+    @Option(names = {"--key-alias"},
+            description = "Alias of the private key entry in the key store")
+    String keyAlias;
+
     @Option(names = {"--client-cert"},
             description = "Path to client certificate file (PEM format, use with --client-key)")
     String clientCert;
