@@ -74,6 +74,16 @@ public class SolaceConnection {
                     }
                 }
 
+                // Set private key password if different from key store password
+                if (options.keyPassword != null) {
+                    properties.setProperty(JCSMPProperties.SSL_PRIVATE_KEY_PASSWORD, options.keyPassword);
+                }
+
+                // Set private key alias if specified
+                if (options.keyAlias != null) {
+                    properties.setProperty(JCSMPProperties.SSL_PRIVATE_KEY_ALIAS, options.keyAlias);
+                }
+
                 // Set authentication scheme for client certificate
                 properties.setProperty(JCSMPProperties.AUTHENTICATION_SCHEME,
                     JCSMPProperties.AUTHENTICATION_SCHEME_CLIENT_CERTIFICATE);

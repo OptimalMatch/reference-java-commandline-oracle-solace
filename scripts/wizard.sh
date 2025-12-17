@@ -27,6 +27,8 @@ WIZARD_TRUST_STORE=""
 WIZARD_TRUST_STORE_PASS=""
 WIZARD_KEY_STORE=""
 WIZARD_KEY_STORE_PASS=""
+WIZARD_KEY_PASSWORD=""
+WIZARD_KEY_ALIAS=""
 WIZARD_CLIENT_CERT=""
 WIZARD_CLIENT_KEY=""
 WIZARD_CA_CERT=""
@@ -192,6 +194,8 @@ setup_ssl() {
                     println_red "Warning: File not found: $WIZARD_KEY_STORE"
                 fi
                 prompt WIZARD_KEY_STORE_PASS "Key store password" "" "true"
+                prompt WIZARD_KEY_PASSWORD "Private key password (if different, press Enter to skip)" "" "true"
+                prompt WIZARD_KEY_ALIAS "Key alias (press Enter to use default)" ""
             fi
 
             echo ""
@@ -272,6 +276,8 @@ build_ssl_args() {
         if [[ -n "$WIZARD_KEY_STORE" ]]; then
             args="$args --key-store '$WIZARD_KEY_STORE'"
             [[ -n "$WIZARD_KEY_STORE_PASS" ]] && args="$args --key-store-password '$WIZARD_KEY_STORE_PASS'"
+            [[ -n "$WIZARD_KEY_PASSWORD" ]] && args="$args --key-password '$WIZARD_KEY_PASSWORD'"
+            [[ -n "$WIZARD_KEY_ALIAS" ]] && args="$args --key-alias '$WIZARD_KEY_ALIAS'"
         fi
 
         # Separate PEM files
@@ -1130,6 +1136,8 @@ wizard_orchestration() {
         orch_args="$orch_args --ssl"
         [[ -n "$WIZARD_KEY_STORE" ]] && orch_args="$orch_args --key-store '$WIZARD_KEY_STORE'"
         [[ -n "$WIZARD_KEY_STORE_PASS" ]] && orch_args="$orch_args --key-store-password '$WIZARD_KEY_STORE_PASS'"
+        [[ -n "$WIZARD_KEY_PASSWORD" ]] && orch_args="$orch_args --key-password '$WIZARD_KEY_PASSWORD'"
+        [[ -n "$WIZARD_KEY_ALIAS" ]] && orch_args="$orch_args --key-alias '$WIZARD_KEY_ALIAS'"
         [[ -n "$WIZARD_TRUST_STORE" ]] && orch_args="$orch_args --trust-store '$WIZARD_TRUST_STORE'"
         [[ -n "$WIZARD_TRUST_STORE_PASS" ]] && orch_args="$orch_args --trust-store-password '$WIZARD_TRUST_STORE_PASS'"
         [[ -n "$WIZARD_CLIENT_CERT" ]] && orch_args="$orch_args --client-cert '$WIZARD_CLIENT_CERT'"
@@ -1289,6 +1297,8 @@ wizard_oracle_orchestration() {
         orch_args="$orch_args --ssl"
         [[ -n "$WIZARD_KEY_STORE" ]] && orch_args="$orch_args --key-store '$WIZARD_KEY_STORE'"
         [[ -n "$WIZARD_KEY_STORE_PASS" ]] && orch_args="$orch_args --key-store-password '$WIZARD_KEY_STORE_PASS'"
+        [[ -n "$WIZARD_KEY_PASSWORD" ]] && orch_args="$orch_args --key-password '$WIZARD_KEY_PASSWORD'"
+        [[ -n "$WIZARD_KEY_ALIAS" ]] && orch_args="$orch_args --key-alias '$WIZARD_KEY_ALIAS'"
         [[ -n "$WIZARD_TRUST_STORE" ]] && orch_args="$orch_args --trust-store '$WIZARD_TRUST_STORE'"
         [[ -n "$WIZARD_TRUST_STORE_PASS" ]] && orch_args="$orch_args --trust-store-password '$WIZARD_TRUST_STORE_PASS'"
         [[ -n "$WIZARD_CLIENT_CERT" ]] && orch_args="$orch_args --client-cert '$WIZARD_CLIENT_CERT'"
@@ -1380,6 +1390,8 @@ SSL/TLS OPTIONS
   --ssl                     Enable SSL/TLS connection
   --key-store PATH          Client keystore (JKS/PKCS12) for mTLS
   --key-store-password      Password for keystore
+  --key-password            Password for private key (if different from keystore)
+  --key-alias               Alias of private key entry in keystore
   --trust-store PATH        Trust store for server validation
   --trust-store-password    Password for trust store
   --client-cert PATH        Client certificate (PEM format)
