@@ -921,6 +921,19 @@ wizard_oracle() {
 wizard_oracle_publish() {
     local db_host="$1" db_port="$2" db_service="$3" db_user="$4" db_pass="$5"
 
+    # This operation requires a Solace connection
+    if [[ "$WIZARD_CONNECTED" != "true" ]]; then
+        echo ""
+        println_yellow "This operation requires a Solace connection."
+        echo ""
+        setup_connection
+        if [[ "$WIZARD_CONNECTED" != "true" ]]; then
+            println_red "Solace connection required for publishing. Aborting."
+            wait_for_key
+            return
+        fi
+    fi
+
     echo ""
     echo "Oracle Publish: Query database and publish results to Solace"
     echo ""
@@ -1510,12 +1523,7 @@ main_menu() {
                 ;;
             t|T) wizard_test_orchestration ;;
             o|O) wizard_test_oracle_orchestration ;;
-            8)
-                if [[ "$WIZARD_CONNECTED" != "true" ]]; then
-                    setup_connection
-                fi
-                [[ "$WIZARD_CONNECTED" == "true" ]] && wizard_oracle
-                ;;
+            8) wizard_oracle ;;  # Oracle operations - only some require Solace connection
             9) setup_connection ;;
             s|S) wizard_setup_queues ;;
             h|H) show_help ;;

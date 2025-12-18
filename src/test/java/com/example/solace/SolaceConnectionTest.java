@@ -134,6 +134,50 @@ public class SolaceConnectionTest {
     }
 
     @Test
+    public void testKeyPasswordConfig() {
+        options.keyStore = "/path/to/keystore.p12";
+        options.keyStorePassword = "keystorepass";
+        options.keyPassword = "privatekeypass";
+
+        assertEquals("Key store path should be set", "/path/to/keystore.p12", options.keyStore);
+        assertEquals("Key store password should be set", "keystorepass", options.keyStorePassword);
+        assertEquals("Key password should be set", "privatekeypass", options.keyPassword);
+    }
+
+    @Test
+    public void testKeyAliasConfig() {
+        options.keyStore = "/path/to/keystore.jks";
+        options.keyStorePassword = "keystorepass";
+        options.keyAlias = "myclientkey";
+
+        assertEquals("Key store path should be set", "/path/to/keystore.jks", options.keyStore);
+        assertEquals("Key alias should be set", "myclientkey", options.keyAlias);
+    }
+
+    @Test
+    public void testKeyPasswordAndKeyAliasConfig() {
+        options.keyStore = "/path/to/keystore.jks";
+        options.keyStorePassword = "keystorepass";
+        options.keyPassword = "privatekeypass";
+        options.keyAlias = "myclientkey";
+        options.host = "tcps://localhost:55443";
+
+        assertEquals("Key store path should be set", "/path/to/keystore.jks", options.keyStore);
+        assertEquals("Key store password should be set", "keystorepass", options.keyStorePassword);
+        assertEquals("Key password should be set", "privatekeypass", options.keyPassword);
+        assertEquals("Key alias should be set", "myclientkey", options.keyAlias);
+        assertTrue("Should have client certificate", options.hasClientCertificate());
+        assertTrue("SSL should be enabled", options.isSSLEnabled());
+    }
+
+    @Test
+    public void testKeyPasswordAndKeyAliasDefaultToNull() {
+        // By default, keyPassword and keyAlias should be null
+        assertNull("Key password should be null by default", options.keyPassword);
+        assertNull("Key alias should be null by default", options.keyAlias);
+    }
+
+    @Test
     public void testSslHelperCreatesKeyStoreFromPem() throws Exception {
         // Create temporary PEM files with real certificates
         File certFile = tempFolder.newFile("client.pem");

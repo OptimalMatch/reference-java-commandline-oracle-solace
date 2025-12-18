@@ -502,4 +502,109 @@ public class ConnectionOptionsTest {
         assertTrue(cmd.connectionOptions.isSSLEnabled());
         assertTrue(cmd.connectionOptions.hasClientCertificate());
     }
+
+    @Test
+    public void testKeyPasswordOption() {
+        @CommandLine.Command(name = "test")
+        class TestCommand implements Runnable {
+            @CommandLine.Mixin
+            ConnectionOptions connectionOptions;
+
+            @Override
+            public void run() {}
+        }
+
+        TestCommand cmd = new TestCommand();
+        new CommandLine(cmd).parseArgs(
+            "-H", "tcps://localhost:55443",
+            "-v", "default",
+            "-q", "test-queue",
+            "--key-store", "/path/to/keystore.p12",
+            "--key-store-password", "keystorepass",
+            "--key-password", "privatekeypass"
+        );
+
+        assertEquals("/path/to/keystore.p12", cmd.connectionOptions.keyStore);
+        assertEquals("keystorepass", cmd.connectionOptions.keyStorePassword);
+        assertEquals("privatekeypass", cmd.connectionOptions.keyPassword);
+    }
+
+    @Test
+    public void testKeyAliasOption() {
+        @CommandLine.Command(name = "test")
+        class TestCommand implements Runnable {
+            @CommandLine.Mixin
+            ConnectionOptions connectionOptions;
+
+            @Override
+            public void run() {}
+        }
+
+        TestCommand cmd = new TestCommand();
+        new CommandLine(cmd).parseArgs(
+            "-H", "tcps://localhost:55443",
+            "-v", "default",
+            "-q", "test-queue",
+            "--key-store", "/path/to/keystore.p12",
+            "--key-store-password", "keystorepass",
+            "--key-alias", "myclientkey"
+        );
+
+        assertEquals("/path/to/keystore.p12", cmd.connectionOptions.keyStore);
+        assertEquals("keystorepass", cmd.connectionOptions.keyStorePassword);
+        assertEquals("myclientkey", cmd.connectionOptions.keyAlias);
+    }
+
+    @Test
+    public void testKeyPasswordAndKeyAliasTogether() {
+        @CommandLine.Command(name = "test")
+        class TestCommand implements Runnable {
+            @CommandLine.Mixin
+            ConnectionOptions connectionOptions;
+
+            @Override
+            public void run() {}
+        }
+
+        TestCommand cmd = new TestCommand();
+        new CommandLine(cmd).parseArgs(
+            "-H", "tcps://localhost:55443",
+            "-v", "default",
+            "-q", "test-queue",
+            "--key-store", "/path/to/keystore.jks",
+            "--key-store-password", "keystorepass",
+            "--key-password", "differentkeypass",
+            "--key-alias", "myalias"
+        );
+
+        assertEquals("/path/to/keystore.jks", cmd.connectionOptions.keyStore);
+        assertEquals("keystorepass", cmd.connectionOptions.keyStorePassword);
+        assertEquals("differentkeypass", cmd.connectionOptions.keyPassword);
+        assertEquals("myalias", cmd.connectionOptions.keyAlias);
+        assertTrue(cmd.connectionOptions.hasClientCertificate());
+    }
+
+    @Test
+    public void testKeyPasswordAndKeyAliasDefaultToNull() {
+        @CommandLine.Command(name = "test")
+        class TestCommand implements Runnable {
+            @CommandLine.Mixin
+            ConnectionOptions connectionOptions;
+
+            @Override
+            public void run() {}
+        }
+
+        TestCommand cmd = new TestCommand();
+        new CommandLine(cmd).parseArgs(
+            "-H", "tcps://localhost:55443",
+            "-v", "default",
+            "-q", "test-queue",
+            "--key-store", "/path/to/keystore.p12",
+            "--key-store-password", "keystorepass"
+        );
+
+        assertNull("keyPassword should be null when not provided", cmd.connectionOptions.keyPassword);
+        assertNull("keyAlias should be null when not provided", cmd.connectionOptions.keyAlias);
+    }
 }
