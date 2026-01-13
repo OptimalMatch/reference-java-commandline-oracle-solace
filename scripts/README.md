@@ -66,7 +66,7 @@ Enter choice:
 | **3) Folder publish** | Batch publish all files from a directory |
 | **4) Copy/Move queue** | Transfer messages between queues |
 | **5) Queue orchestration** | Consume → Transform → Publish workflow |
-| **6) Oracle orchestration** | Oracle Query → Transform → Publish workflow |
+| **6) Oracle orchestration** | Oracle Query → Transform → Publish workflow (single or batch mode) |
 | **7) Performance test** | Run throughput and latency benchmarks |
 | **t) Test queue orchestration** | Run automated test suite for queue orchestration |
 | **o) Test Oracle orchestration** | Run automated test suite for Oracle orchestration |
@@ -508,7 +508,7 @@ Oracle-to-Solace orchestration: **Query → Transform → Publish**
 
 **Workflow:**
 1. **Oracle Export** - Execute SQL query, save each row as a file
-2. **Transform** - Apply customizable transformation to each file
+2. **Transform** - Apply customizable transformation (single-file or batch mode)
 3. **Publish** - Send transformed files to Solace queue
 
 **Key Options:**
@@ -524,7 +524,92 @@ Oracle-to-Solace orchestration: **Query → Transform → Publish**
 | `-m, --message-column` | Column containing message content |
 | `--filename-column` | Column to use as filename |
 | `-d, --dest-queue` | Destination Solace queue |
+| `--transform-mode` | Transform mode: `single` (default) or `batch` |
+| `--transform-script` | External script for batch transformation |
 | `--dry-run` | Preview without executing |
+
+**Transform Modes:**
+
+The script supports two transform modes:
+
+| Mode | Description |
+|------|-------------|
+| `single` | Process files one at a time using `transform_message()` function (default) |
+| `batch` | Process entire folder at once using `transform_folder()` or external script |
+
+**Single-file transformation** (default):
+```bash
+./orchestrate-oracle.sh --sql "SELECT * FROM orders" -d output.queue
+```
+Each file is processed individually through the `transform_message()` function.
+
+**Batch folder transformation** with built-in function:
+```bash
+./orchestrate-oracle.sh --sql "SELECT * FROM orders" -d output.queue --transform-mode batch
+```
+All files are processed together through the `transform_folder()` function.
+
+**Batch folder transformation** with external script:
+```bash
+./orchestrate-oracle.sh --sql "SELECT * FROM orders" -d output.queue \
+  --transform-script /path/to/my-transform.sh
+```
+The external script receives two arguments: `INPUT_DIR` and `OUTPUT_DIR`.
+
+**Customizing Single-File Transform:**
+
+Edit the `transform_message()` function in `orchestrate-oracle.sh`:
+
+```bash
+transform_message() {
+    local input_file="$1"
+    local output_file="$2"
+
+    # Example: Add JSON wrapper
+    echo '{"transformed": true, "data":' > "$output_file"
+    cat "$input_file" >> "$output_file"
+    echo '}' >> "$output_file"
+}
+```
+
+**Customizing Batch Transform:**
+
+Edit the `transform_folder()` function in `orchestrate-oracle.sh`:
+
+```bash
+transform_folder() {
+    local input_dir="$1"
+    local output_dir="$2"
+
+    # Example: Process all files with a batch tool
+    for file in "$input_dir"/*.txt; do
+        [[ -f "$file" ]] || continue
+        # Your batch transformation logic here
+        cp "$file" "$output_dir/$(basename "$file")"
+    done
+}
+```
+
+**External Transform Script Interface:**
+
+When using `--transform-script`, your script receives:
+- `$1` - Input directory containing files to transform
+- `$2` - Output directory where transformed files should be written
+
+Example external script:
+```bash
+#!/bin/bash
+INPUT_DIR="$1"
+OUTPUT_DIR="$2"
+
+# Process all files in input directory
+for file in "$INPUT_DIR"/*; do
+    [[ -f "$file" ]] || continue
+    basename=$(basename "$file")
+    # Apply your transformation
+    your-transform-tool "$file" > "$OUTPUT_DIR/$basename"
+done
+```
 
 ### test-orchestration.sh
 
