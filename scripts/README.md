@@ -65,7 +65,7 @@ Enter choice:
 | **2) Consume messages** | Receive messages with browse, consume, or no-ack modes |
 | **3) Folder publish** | Batch publish all files from a directory |
 | **4) Copy/Move queue** | Transfer messages between queues |
-| **5) Queue orchestration** | Consume → Transform → Publish workflow |
+| **5) Queue orchestration** | Consume → Transform → Publish workflow (single or batch mode) |
 | **6) Oracle orchestration** | Oracle Query → Transform → Publish workflow (single or batch mode) |
 | **7) Performance test** | Run throughput and latency benchmarks |
 | **t) Test queue orchestration** | Run automated test suite for queue orchestration |
@@ -448,7 +448,7 @@ End-to-end message orchestration: **Consume → Transform → Publish**
 
 **Workflow:**
 1. **Consume** - Read messages from source queue, save to files
-2. **Transform** - Apply customizable transformation to each file
+2. **Transform** - Apply customizable transformation (single-file or batch mode)
 3. **Publish** - Send transformed files to destination queue
 
 **Key Options:**
@@ -460,12 +460,36 @@ End-to-end message orchestration: **Consume → Transform → Publish**
 | `-t, --timeout` | Consume timeout in seconds |
 | `--browse` | Browse only (non-destructive) |
 | `-w, --work-dir` | Working directory for files |
+| `--transform-mode` | Transform mode: `single` (default) or `batch` |
+| `--transform-script` | External script for batch transformation |
 | `--dry-run` | Preview without executing |
 | `--verbose` | Enable verbose output |
 | `--no-cleanup` | Keep files after processing |
 | `--config` | Load settings from config file |
 
-**Customizing the Transform:**
+**Transform Modes:**
+
+| Mode | Description |
+|------|-------------|
+| `single` | Process files one at a time using `transform_message()` function (default) |
+| `batch` | Process entire folder at once using `transform_folder()` or external script |
+
+**Single-file transformation** (default):
+```bash
+./orchestrate.sh -s input.queue -d output.queue
+```
+
+**Batch folder transformation** with external script:
+```bash
+./orchestrate.sh -s input.queue -d output.queue --transform-script /path/to/my-transform.sh
+```
+
+**Batch folder transformation** with built-in function:
+```bash
+./orchestrate.sh -s input.queue -d output.queue --transform-mode batch
+```
+
+**Customizing Single-File Transform:**
 
 Edit the `transform_message()` function in `orchestrate.sh`:
 
@@ -478,6 +502,23 @@ transform_message() {
     echo '{"transformed": true, "data":' > "$output_file"
     cat "$input_file" >> "$output_file"
     echo '}' >> "$output_file"
+}
+```
+
+**Customizing Batch Transform:**
+
+Edit the `transform_folder()` function in `orchestrate.sh`:
+
+```bash
+transform_folder() {
+    local input_dir="$1"
+    local output_dir="$2"
+
+    # Example: Process all files with a batch tool
+    for file in "$input_dir"/*.txt; do
+        [[ -f "$file" ]] || continue
+        cp "$file" "$output_dir/$(basename "$file")"
+    done
 }
 ```
 

@@ -75,6 +75,11 @@ ORCH_DRY_RUN=false
 ORCH_CLEANUP_INPUT=true     # remove input files after processing
 ORCH_CLEANUP_OUTPUT=true    # remove output files after publishing
 
+# Transform Configuration
+# Mode: "single" = per-file transform_message(), "batch" = external script for entire folder
+ORCH_TRANSFORM_MODE="single"
+ORCH_TRANSFORM_SCRIPT=""
+
 # -----------------------------------------------------------------------------
 # Transform Function (Placeholder)
 # -----------------------------------------------------------------------------
@@ -119,6 +124,78 @@ transform_message() {
         echo "# ----------------------------------------"
         cat "$input_file"
     } > "$output_file"
+
+    # =========================================================================
+    # END PLACEHOLDER
+    # =========================================================================
+
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Batch Transform Function (Placeholder)
+# -----------------------------------------------------------------------------
+
+# This is a placeholder batch transformation function.
+# Override this function or replace its contents with your actual batch transformation logic.
+# This function is called when ORCH_TRANSFORM_MODE="batch" and no external script is specified.
+#
+# Arguments:
+#   $1 - Input directory path (folder containing files to transform)
+#   $2 - Output directory path (where to write transformed files)
+#
+# Returns:
+#   0 on success, non-zero on failure
+#
+# The function should:
+#   - Process all files in the input directory
+#   - Write transformed files to the output directory
+#   - Preserve filenames (or use a consistent naming scheme)
+#
+# Example use cases for batch transformation:
+#   - Bulk format conversion (all JSON files to XML)
+#   - Batch encryption/decryption
+#   - Mass data enrichment from a shared source
+#   - Parallel processing for better performance
+#   - Transformations that need context across multiple files
+#
+transform_folder() {
+    local input_dir="$1"
+    local output_dir="$2"
+
+    # =========================================================================
+    # PLACEHOLDER BATCH TRANSFORMATION
+    # Replace this section with your actual batch transformation logic
+    # =========================================================================
+
+    if [[ "$ORCH_VERBOSE" == "true" ]]; then
+        info "Batch transforming folder: $input_dir -> $output_dir"
+    fi
+
+    # Default behavior: copy all files with a transformation marker
+    # This is just a placeholder - replace with actual transformation
+    local file_count=0
+    for input_file in "$input_dir"/*"${ORCH_FILE_EXTENSION}"; do
+        [[ -f "$input_file" ]] || continue
+
+        local basename
+        basename=$(basename "$input_file")
+        local output_file="${output_dir}/${basename}"
+
+        {
+            echo "# Batch transformed at: $(date -Iseconds)"
+            echo "# Source: Queue message (batch mode)"
+            echo "# Original file: $basename"
+            echo "# ----------------------------------------"
+            cat "$input_file"
+        } > "$output_file"
+
+        ((file_count++)) || true
+    done
+
+    if [[ "$ORCH_VERBOSE" == "true" ]]; then
+        info "Batch transform processed $file_count file(s)"
+    fi
 
     # =========================================================================
     # END PLACEHOLDER
@@ -183,6 +260,15 @@ FILE OPTIONS:
     --use-correlation            Use correlation ID as filename (default: true)
     --no-correlation             Use generated filenames instead of correlation ID
 
+TRANSFORM OPTIONS:
+    --transform-mode MODE        Transform mode: 'single' or 'batch' (default: single)
+                                 - single: Process files one at a time using transform_message()
+                                 - batch: Process entire folder at once using transform_folder()
+                                          or an external script
+    --transform-script PATH      External script for batch transformation
+                                 The script receives: INPUT_DIR OUTPUT_DIR as arguments
+                                 Automatically sets --transform-mode batch
+
 PROCESSING OPTIONS:
     --dry-run                    Show what would be done without executing
     --verbose, -V                Enable verbose output
@@ -209,6 +295,12 @@ EXAMPLES:
 
     # Use a config file
     orchestrate.sh --config /etc/orchestration.conf
+
+    # Batch transform using external script
+    orchestrate.sh -s input.q -d output.q --transform-script /path/to/my-transform.sh
+
+    # Batch transform using built-in transform_folder()
+    orchestrate.sh -s input.q -d output.q --transform-mode batch
 
 EOF
     exit 0
@@ -343,12 +435,23 @@ step_transform() {
         return 0
     fi
 
-    local total_count success_count fail_count
+    local total_count
     total_count=$(echo "$input_files" | wc -l)
-    success_count=0
-    fail_count=0
+    info "Processing $total_count file(s) in $ORCH_TRANSFORM_MODE mode"
 
-    info "Processing $total_count file(s)"
+    # Branch based on transform mode
+    if [[ "$ORCH_TRANSFORM_MODE" == "batch" ]]; then
+        step_transform_batch "$total_count"
+    else
+        step_transform_single "$input_files"
+    fi
+}
+
+# Single-file transformation: process files one at a time using transform_message()
+step_transform_single() {
+    local input_files="$1"
+    local success_count=0
+    local fail_count=0
 
     while IFS= read -r input_file; do
         local basename
@@ -363,7 +466,7 @@ step_transform() {
 
         if [[ "$ORCH_DRY_RUN" == "true" ]]; then
             info "[DRY RUN] Would transform: $basename"
-            ((success_count++))
+            ((success_count++)) || true
             continue
         fi
 
@@ -377,6 +480,64 @@ step_transform() {
     done <<< "$input_files"
 
     info "Transform complete: $success_count succeeded, $fail_count failed"
+    return 0
+}
+
+# Batch transformation: process entire folder at once
+step_transform_batch() {
+    local total_count="$1"
+
+    if [[ "$ORCH_DRY_RUN" == "true" ]]; then
+        if [[ -n "$ORCH_TRANSFORM_SCRIPT" ]]; then
+            info "[DRY RUN] Would run transform script: $ORCH_TRANSFORM_SCRIPT"
+            info "[DRY RUN]   Input dir:  $ORCH_INPUT_DIR"
+            info "[DRY RUN]   Output dir: $ORCH_OUTPUT_DIR"
+        else
+            info "[DRY RUN] Would batch transform $total_count file(s)"
+            info "[DRY RUN]   Input dir:  $ORCH_INPUT_DIR"
+            info "[DRY RUN]   Output dir: $ORCH_OUTPUT_DIR"
+        fi
+        return 0
+    fi
+
+    local transform_exit=0
+
+    if [[ -n "$ORCH_TRANSFORM_SCRIPT" ]]; then
+        # Use external transform script
+        info "Running external transform script: $ORCH_TRANSFORM_SCRIPT"
+        info "  Input dir:  $ORCH_INPUT_DIR"
+        info "  Output dir: $ORCH_OUTPUT_DIR"
+
+        if [[ ! -x "$ORCH_TRANSFORM_SCRIPT" ]]; then
+            error "Transform script is not executable: $ORCH_TRANSFORM_SCRIPT"
+            return 1
+        fi
+
+        set +e
+        "$ORCH_TRANSFORM_SCRIPT" "$ORCH_INPUT_DIR" "$ORCH_OUTPUT_DIR"
+        transform_exit=$?
+        set -e
+
+        if [[ $transform_exit -ne 0 ]]; then
+            error "Transform script failed with exit code $transform_exit"
+            return $transform_exit
+        fi
+    else
+        # Use built-in transform_folder function
+        info "Using built-in batch transform"
+        info "  Input dir:  $ORCH_INPUT_DIR"
+        info "  Output dir: $ORCH_OUTPUT_DIR"
+
+        if ! transform_folder "$ORCH_INPUT_DIR" "$ORCH_OUTPUT_DIR"; then
+            error "Batch transform failed"
+            return 1
+        fi
+    fi
+
+    # Count output files to report success
+    local output_count
+    output_count=$(find "$ORCH_OUTPUT_DIR" -type f -name "*${ORCH_FILE_EXTENSION}" 2>/dev/null | wc -l)
+    info "Batch transform complete: $output_count file(s) produced"
 
     return 0
 }
@@ -441,6 +602,8 @@ run_orchestration() {
     echo "  Work Dir:      $ORCH_WORK_DIR"
     echo "  Broker:        $ORCH_HOST"
     echo "  VPN:           $ORCH_VPN"
+    echo "  Transform:     $ORCH_TRANSFORM_MODE"
+    [[ -n "$ORCH_TRANSFORM_SCRIPT" ]] && echo "  Transform Script: $ORCH_TRANSFORM_SCRIPT"
     [[ "$ORCH_USE_SSL" == "true" ]] && echo "  SSL:           enabled"
     [[ "$ORCH_DRY_RUN" == "true" ]] && echo "  Mode:          DRY RUN"
     echo ""
@@ -589,6 +752,20 @@ parse_args() {
                 ORCH_USE_CORRELATION=false
                 shift
                 ;;
+            # Transform options
+            --transform-mode)
+                ORCH_TRANSFORM_MODE="$2"
+                if [[ "$ORCH_TRANSFORM_MODE" != "single" && "$ORCH_TRANSFORM_MODE" != "batch" ]]; then
+                    error "Invalid transform mode: $ORCH_TRANSFORM_MODE (must be 'single' or 'batch')"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            --transform-script)
+                ORCH_TRANSFORM_SCRIPT="$2"
+                ORCH_TRANSFORM_MODE="batch"  # Automatically set batch mode when script is specified
+                shift 2
+                ;;
             --dry-run)
                 ORCH_DRY_RUN=true
                 shift
@@ -643,6 +820,11 @@ validate_params() {
 
     if [[ -z "$ORCH_HOST" ]]; then
         error "Solace host is required (-H, --host)"
+        ((errors++))
+    fi
+
+    if [[ -n "$ORCH_TRANSFORM_SCRIPT" && ! -f "$ORCH_TRANSFORM_SCRIPT" ]]; then
+        error "Transform script not found: $ORCH_TRANSFORM_SCRIPT"
         ((errors++))
     fi
 
