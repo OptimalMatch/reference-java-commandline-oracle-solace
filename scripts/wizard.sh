@@ -1090,6 +1090,40 @@ wizard_orchestration() {
     local work_dir
     prompt work_dir "Working directory" "/tmp/solace-orchestration"
 
+    # Transform mode
+    echo ""
+    println_yellow "Transform Configuration:"
+    select_option "Transform mode:" \
+        "Single file (process files one at a time)" \
+        "Batch folder (process entire folder at once)"
+    local transform_choice=$?
+
+    local transform_mode="single"
+    local transform_script=""
+
+    case $transform_choice in
+        0)
+            transform_mode="single"
+            echo "Using single-file mode with transform_message() function"
+            ;;
+        1)
+            transform_mode="batch"
+            echo ""
+            if prompt_yes_no "Use external transform script?" "y"; then
+                prompt transform_script "Path to transform script" ""
+                if [[ -n "$transform_script" && ! -f "$transform_script" ]]; then
+                    println_red "Warning: Transform script not found: $transform_script"
+                    if ! prompt_yes_no "Continue anyway?" "n"; then
+                        wait_for_key
+                        return
+                    fi
+                fi
+            else
+                echo "Using built-in transform_folder() function"
+            fi
+            ;;
+    esac
+
     # Processing options
     local browse_only=false
     local use_correlation=true
@@ -1131,6 +1165,8 @@ wizard_orchestration() {
     display_cmd="$display_cmd -w $work_dir"
     [[ "$browse_only" == "true" ]] && display_cmd="$display_cmd --browse"
     [[ "$use_correlation" == "false" ]] && display_cmd="$display_cmd --no-correlation"
+    [[ "$transform_mode" == "batch" ]] && display_cmd="$display_cmd --transform-mode batch"
+    [[ -n "$transform_script" ]] && display_cmd="$display_cmd --transform-script $transform_script"
     [[ "$keep_files" == "true" ]] && display_cmd="$display_cmd --no-cleanup"
     [[ "$verbose" == "true" ]] && display_cmd="$display_cmd --verbose"
     [[ "$dry_run" == "true" ]] && display_cmd="$display_cmd --dry-run"
@@ -1165,6 +1201,11 @@ wizard_orchestration() {
 
     [[ "$browse_only" == "true" ]] && orch_args="$orch_args --browse"
     [[ "$use_correlation" == "false" ]] && orch_args="$orch_args --no-correlation"
+
+    # Transform args
+    [[ "$transform_mode" == "batch" ]] && orch_args="$orch_args --transform-mode batch"
+    [[ -n "$transform_script" ]] && orch_args="$orch_args --transform-script '$transform_script'"
+
     [[ "$keep_files" == "true" ]] && orch_args="$orch_args --no-cleanup"
     [[ "$verbose" == "true" ]] && orch_args="$orch_args --verbose"
     [[ "$dry_run" == "true" ]] && orch_args="$orch_args --dry-run"
