@@ -564,6 +564,8 @@ Oracle-to-Solace orchestration: **Query → Transform → Publish**
 | `-f, --sql-file` | SQL file path |
 | `-m, --message-column` | Column containing message content |
 | `--filename-column` | Column to use as filename |
+| `--metadata-columns` | Comma-separated columns to include in manifest (e.g., `status,region`) |
+| `--manifest` | Manifest filename for metadata (default: `manifest.csv`) |
 | `-d, --dest-queue` | Destination Solace queue |
 | `--transform-mode` | Transform mode: `single` (default) or `batch` |
 | `--transform-script` | External script for batch transformation |
@@ -651,6 +653,59 @@ for file in "$INPUT_DIR"/*; do
     your-transform-tool "$file" > "$OUTPUT_DIR/$basename"
 done
 ```
+
+**Using Metadata Columns with Batch Transforms:**
+
+When your transformation logic needs additional data from Oracle (e.g., status, region, priority), use `--metadata-columns` to generate a manifest file:
+
+```bash
+./orchestrate-oracle.sh \
+  --sql "SELECT id, content, status, region, priority FROM orders" \
+  --filename-column id \
+  --message-column content \
+  --metadata-columns "status,region,priority" \
+  --manifest manifest.csv \
+  --transform-mode batch \
+  --transform-script /path/to/my-transform.sh \
+  -d output.queue
+```
+
+This creates:
+```
+work_dir/input/
+├── manifest.csv           # filename,status,region,priority
+├── order_001.xml          # content files
+├── order_002.xml
+└── ...
+```
+
+Your transform script can read the manifest to access metadata:
+
+```bash
+#!/bin/bash
+INPUT_DIR="$1"
+OUTPUT_DIR="$2"
+
+# Load manifest into associative array (bash 4+)
+declare -A status region priority
+while IFS=, read -r filename s r p; do
+    [[ "$filename" == "filename" ]] && continue  # skip header
+    status["$filename"]="$s"
+    region["$filename"]="$r"
+    priority["$filename"]="$p"
+done < "$INPUT_DIR/manifest.csv"
+
+# Process files with metadata
+for file in "$INPUT_DIR"/*.xml; do
+    [[ -f "$file" ]] || continue
+    name=$(basename "$file")
+    echo "Processing $name: status=${status[$name]}, region=${region[$name]}"
+    # Transform using metadata...
+    cp "$file" "$OUTPUT_DIR/$name"
+done
+```
+
+Or use a Java transform JAR for better performance with large datasets (single JVM instance, manifest loaded once into memory).
 
 ### test-orchestration.sh
 

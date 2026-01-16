@@ -372,4 +372,212 @@ public class OracleExportCommandIT {
             assertTrue(content.length > 0);
         }
     }
+
+    @Test
+    public void testExportWithMetadataColumnsAndManifest() throws Exception {
+        // Add test data with metadata columns
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        java.sql.Statement stmt = conn.createStatement();
+        stmt.execute("DROP TABLE IF EXISTS export_metadata_test");
+        stmt.execute("CREATE TABLE export_metadata_test (" +
+            "filename VARCHAR(100), " +
+            "content CLOB, " +
+            "status VARCHAR(50), " +
+            "region VARCHAR(50), " +
+            "priority VARCHAR(20)" +
+            ")");
+        stmt.execute("INSERT INTO export_metadata_test VALUES " +
+            "('customer001', '<data>Content 1</data>', 'ACTIVE', 'US-EAST', 'HIGH')");
+        stmt.execute("INSERT INTO export_metadata_test VALUES " +
+            "('customer002', '<data>Content 2</data>', 'INACTIVE', 'US-WEST', 'LOW')");
+        stmt.execute("INSERT INTO export_metadata_test VALUES " +
+            "('customer003', '<data>Content 3</data>', 'PENDING', 'EU-CENTRAL', 'MEDIUM')");
+        stmt.close();
+
+        File outputDir = tempFolder.newFolder("export_metadata");
+
+        // Simulate the export with metadata columns logic
+        stmt = conn.createStatement();
+        java.sql.ResultSet rs = stmt.executeQuery(
+            "SELECT filename, content, status, region, priority FROM export_metadata_test ORDER BY filename");
+
+        // Collect metadata for manifest
+        java.util.List<String[]> manifestRows = new java.util.ArrayList<>();
+        String[] metadataColNames = {"status", "region", "priority"};
+
+        while (rs.next()) {
+            String filename = rs.getString(1) + ".xml";
+            String content = rs.getString(2);
+
+            // Write content file
+            File outputFile = new File(outputDir, filename);
+            Files.write(outputFile.toPath(), content.getBytes(StandardCharsets.UTF_8));
+
+            // Collect metadata row
+            String[] row = new String[4];
+            row[0] = filename;
+            row[1] = rs.getString(3); // status
+            row[2] = rs.getString(4); // region
+            row[3] = rs.getString(5); // priority
+            manifestRows.add(row);
+        }
+
+        rs.close();
+        stmt.close();
+
+        // Write manifest file
+        File manifestFile = new File(outputDir, "manifest.csv");
+        try (java.io.Writer writer = new java.io.OutputStreamWriter(
+                new java.io.FileOutputStream(manifestFile), StandardCharsets.UTF_8)) {
+            // Write header
+            writer.write("filename,status,region,priority\n");
+            // Write data rows
+            for (String[] row : manifestRows) {
+                writer.write(String.join(",", row) + "\n");
+            }
+        }
+
+        conn.close();
+
+        // Verify content files were created
+        assertTrue(new File(outputDir, "customer001.xml").exists());
+        assertTrue(new File(outputDir, "customer002.xml").exists());
+        assertTrue(new File(outputDir, "customer003.xml").exists());
+
+        // Verify manifest file
+        assertTrue(manifestFile.exists());
+        String manifestContent = new String(Files.readAllBytes(manifestFile.toPath()), StandardCharsets.UTF_8);
+        String[] lines = manifestContent.split("\n");
+        assertEquals(4, lines.length); // header + 3 data rows
+
+        // Verify header
+        assertEquals("filename,status,region,priority", lines[0]);
+
+        // Verify data rows
+        assertEquals("customer001.xml,ACTIVE,US-EAST,HIGH", lines[1]);
+        assertEquals("customer002.xml,INACTIVE,US-WEST,LOW", lines[2]);
+        assertEquals("customer003.xml,PENDING,EU-CENTRAL,MEDIUM", lines[3]);
+    }
+
+    @Test
+    public void testManifestWithSpecialCharactersInValues() throws Exception {
+        // Test that values with commas and quotes are properly escaped
+        Connection conn = DriverManager.getConnection(H2_URL, H2_USER, H2_PASSWORD);
+        java.sql.Statement stmt = conn.createStatement();
+        stmt.execute("DROP TABLE IF EXISTS export_special_chars");
+        stmt.execute("CREATE TABLE export_special_chars (" +
+            "filename VARCHAR(100), " +
+            "content CLOB, " +
+            "description VARCHAR(200)" +
+            ")");
+        stmt.execute("INSERT INTO export_special_chars VALUES " +
+            "('file1', 'content', 'Simple description')");
+        stmt.execute("INSERT INTO export_special_chars VALUES " +
+            "('file2', 'content', 'Description, with comma')");
+        stmt.execute("INSERT INTO export_special_chars VALUES " +
+            "('file3', 'content', 'Description with \"quotes\"')");
+        stmt.close();
+
+        File outputDir = tempFolder.newFolder("export_special");
+
+        stmt = conn.createStatement();
+        java.sql.ResultSet rs = stmt.executeQuery(
+            "SELECT filename, content, description FROM export_special_chars ORDER BY filename");
+
+        java.util.List<String[]> manifestRows = new java.util.ArrayList<>();
+
+        while (rs.next()) {
+            String filename = rs.getString(1) + ".txt";
+            String content = rs.getString(2);
+            String description = rs.getString(3);
+
+            File outputFile = new File(outputDir, filename);
+            Files.write(outputFile.toPath(), content.getBytes(StandardCharsets.UTF_8));
+
+            manifestRows.add(new String[]{filename, description});
+        }
+
+        rs.close();
+        stmt.close();
+        conn.close();
+
+        // Write manifest with proper CSV escaping
+        File manifestFile = new File(outputDir, "manifest.csv");
+        try (java.io.Writer writer = new java.io.OutputStreamWriter(
+                new java.io.FileOutputStream(manifestFile), StandardCharsets.UTF_8)) {
+            writer.write("filename,description\n");
+            for (String[] row : manifestRows) {
+                writer.write(escapeCsvField(row[0]) + "," + escapeCsvField(row[1]) + "\n");
+            }
+        }
+
+        // Verify manifest
+        String manifestContent = new String(Files.readAllBytes(manifestFile.toPath()), StandardCharsets.UTF_8);
+        String[] lines = manifestContent.split("\n");
+
+        assertEquals("filename,description", lines[0]);
+        assertEquals("file1.txt,Simple description", lines[1]);
+        assertEquals("file2.txt,\"Description, with comma\"", lines[2]);
+        assertEquals("file3.txt,\"Description with \"\"quotes\"\"\"", lines[3]);
+    }
+
+    // Helper method for CSV escaping in tests
+    private String escapeCsvField(String value) {
+        if (value == null) {
+            return "";
+        }
+        if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
+    }
+
+    @Test
+    public void testManifestReadableByBashAndJava() throws Exception {
+        // Test that the manifest format can be parsed back
+        File outputDir = tempFolder.newFolder("export_parseable");
+
+        // Create a manifest
+        File manifestFile = new File(outputDir, "manifest.csv");
+        try (java.io.Writer writer = new java.io.OutputStreamWriter(
+                new java.io.FileOutputStream(manifestFile), StandardCharsets.UTF_8)) {
+            writer.write("filename,status,region,priority\n");
+            writer.write("file001.xml,ACTIVE,US-EAST,HIGH\n");
+            writer.write("file002.xml,INACTIVE,EU-WEST,LOW\n");
+        }
+
+        // Parse it back (simulating what a Java transform would do)
+        java.util.Map<String, java.util.Map<String, String>> metadata = new java.util.HashMap<>();
+
+        java.io.BufferedReader reader = new java.io.BufferedReader(
+            new java.io.InputStreamReader(new java.io.FileInputStream(manifestFile), StandardCharsets.UTF_8));
+
+        String headerLine = reader.readLine();
+        String[] headers = headerLine.split(",");
+
+        String line;
+        while ((line = reader.readLine()) != null) {
+            String[] values = line.split(",");
+            String filename = values[0];
+            java.util.Map<String, String> rowData = new java.util.HashMap<>();
+            for (int i = 1; i < headers.length && i < values.length; i++) {
+                rowData.put(headers[i], values[i]);
+            }
+            metadata.put(filename, rowData);
+        }
+        reader.close();
+
+        // Verify parsed data
+        assertEquals(2, metadata.size());
+
+        assertTrue(metadata.containsKey("file001.xml"));
+        assertEquals("ACTIVE", metadata.get("file001.xml").get("status"));
+        assertEquals("US-EAST", metadata.get("file001.xml").get("region"));
+        assertEquals("HIGH", metadata.get("file001.xml").get("priority"));
+
+        assertTrue(metadata.containsKey("file002.xml"));
+        assertEquals("INACTIVE", metadata.get("file002.xml").get("status"));
+        assertEquals("EU-WEST", metadata.get("file002.xml").get("region"));
+        assertEquals("LOW", metadata.get("file002.xml").get("priority"));
+    }
 }

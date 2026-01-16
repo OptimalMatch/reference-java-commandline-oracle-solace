@@ -56,6 +56,8 @@ ORCH_SQL_FILE=""
 ORCH_MESSAGE_COLUMN=""
 ORCH_FILENAME_COLUMN=""
 ORCH_FILENAME_PREFIX="row_"
+ORCH_METADATA_COLUMNS=""
+ORCH_MANIFEST_FILE=""
 
 # Queue Configuration
 ORCH_DEST_QUEUE="${SOLACE_QUEUE:-output.queue}"
@@ -242,6 +244,8 @@ ORACLE QUERY OPTIONS:
     -m, --message-column COL Column containing message content (default: first column)
     --filename-column COL    Column to use as filename (default: sequential)
     --prefix PREFIX          Prefix for generated filenames (default: row_)
+    --metadata-columns COLS  Comma-separated columns to include in manifest (e.g., status,region)
+    --manifest FILE          Manifest filename for metadata (default: manifest.csv)
 
 SOLACE CONNECTION OPTIONS:
     -H, --host HOST          Solace broker host (default: tcp://localhost:55555)
@@ -315,6 +319,12 @@ EXAMPLES:
 
     # Batch transform using built-in transform_folder()
     orchestrate-oracle.sh --sql "SELECT * FROM orders" -d queue.out --transform-mode batch
+
+    # Export with metadata columns for batch transform processing
+    orchestrate-oracle.sh --sql "SELECT id, content, status, region FROM orders" \
+        --filename-column id --message-column content \
+        --metadata-columns "status,region" --manifest manifest.csv \
+        -d queue.out --transform-mode batch
 
 EOF
     exit 0
@@ -425,6 +435,8 @@ step_oracle_export() {
     [[ -n "$ORCH_MESSAGE_COLUMN" ]] && args="$args --message-column '$ORCH_MESSAGE_COLUMN'"
     [[ -n "$ORCH_FILENAME_COLUMN" ]] && args="$args --filename-column '$ORCH_FILENAME_COLUMN'"
     [[ -n "$ORCH_FILENAME_PREFIX" ]] && args="$args --prefix '$ORCH_FILENAME_PREFIX'"
+    [[ -n "$ORCH_METADATA_COLUMNS" ]] && args="$args --metadata-columns '$ORCH_METADATA_COLUMNS'"
+    [[ -n "$ORCH_MANIFEST_FILE" ]] && args="$args --manifest '$ORCH_MANIFEST_FILE'"
     [[ "$ORCH_OVERWRITE" == "true" ]] && args="$args --overwrite"
     [[ -n "$ORCH_AUDIT_LOG" ]] && args="$args --audit-log '$ORCH_AUDIT_LOG'"
 
@@ -713,6 +725,14 @@ parse_args() {
                 ;;
             --prefix)
                 ORCH_FILENAME_PREFIX="$2"
+                shift 2
+                ;;
+            --metadata-columns)
+                ORCH_METADATA_COLUMNS="$2"
+                shift 2
+                ;;
+            --manifest)
+                ORCH_MANIFEST_FILE="$2"
                 shift 2
                 ;;
             # Solace connection
