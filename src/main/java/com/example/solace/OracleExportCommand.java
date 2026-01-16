@@ -14,6 +14,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import static com.example.solace.AuditLogger.maskSensitive;
@@ -72,6 +74,15 @@ public class OracleExportCommand implements Callable<Integer> {
             description = "Query database but don't write files")
     boolean dryRun;
 
+    @Option(names = {"--metadata-columns"},
+            description = "Comma-separated list of additional columns to include in manifest file (e.g., 'status,region,priority')")
+    String metadataColumns;
+
+    @Option(names = {"--manifest"},
+            description = "Filename for the CSV manifest containing metadata (default: manifest.csv)",
+            defaultValue = "manifest.csv")
+    String manifestFilename;
+
     @Override
     public Integer call() {
         Connection dbConnection = null;
@@ -84,6 +95,8 @@ public class OracleExportCommand implements Callable<Integer> {
              .addParameter("sqlFile", sqlFile != null ? sqlFile.getAbsolutePath() : null)
              .addParameter("messageColumn", messageColumn)
              .addParameter("filenameColumn", filenameColumn)
+             .addParameter("metadataColumns", metadataColumns)
+             .addParameter("manifestFilename", manifestFilename)
              .addParameter("outputFolder", outputFolder != null ? outputFolder.getAbsolutePath() : null)
              .addParameter("fileExtension", fileExtension)
              .addParameter("overwrite", overwrite)
@@ -144,6 +157,23 @@ public class OracleExportCommand implements Callable<Integer> {
                 filenameColIndex = rs.findColumn(filenameColumn);
             }
 
+            // Parse and resolve metadata columns
+            String[] metadataColNames = null;
+            int[] metadataColIndices = null;
+            List<String[]> manifestRows = null;
+            boolean hasMetadataColumns = metadataColumns != null && !metadataColumns.trim().isEmpty();
+
+            if (hasMetadataColumns) {
+                metadataColNames = metadataColumns.split(",");
+                metadataColIndices = new int[metadataColNames.length];
+                for (int i = 0; i < metadataColNames.length; i++) {
+                    metadataColNames[i] = metadataColNames[i].trim();
+                    metadataColIndices[i] = rs.findColumn(metadataColNames[i]);
+                }
+                manifestRows = new ArrayList<>();
+                System.out.println("Metadata columns: " + String.join(", ", metadataColNames));
+            }
+
             if (dryRun) {
                 System.out.println("\n=== DRY RUN MODE - Files will not be written ===\n");
             }
@@ -176,6 +206,14 @@ public class OracleExportCommand implements Callable<Integer> {
                     System.out.println("Would write file: " + outputFile.getAbsolutePath());
                     System.out.println("  Content length: " + (content != null ? content.length() : 0) + " characters");
                     System.out.println("  Preview: " + truncate(content, 80));
+                    if (hasMetadataColumns) {
+                        System.out.print("  Metadata: ");
+                        for (int i = 0; i < metadataColIndices.length; i++) {
+                            if (i > 0) System.out.print(", ");
+                            System.out.print(metadataColNames[i] + "=" + rs.getString(metadataColIndices[i]));
+                        }
+                        System.out.println();
+                    }
                     fileCount++;
                 } else {
                     if (outputFile.exists() && !overwrite) {
@@ -191,6 +229,16 @@ public class OracleExportCommand implements Callable<Integer> {
                         }
                     }
 
+                    // Collect metadata for manifest
+                    if (hasMetadataColumns) {
+                        String[] row = new String[metadataColIndices.length + 1];
+                        row[0] = filename;
+                        for (int i = 0; i < metadataColIndices.length; i++) {
+                            row[i + 1] = rs.getString(metadataColIndices[i]);
+                        }
+                        manifestRows.add(row);
+                    }
+
                     progress.increment();
                     fileCount++;
                 }
@@ -203,15 +251,47 @@ public class OracleExportCommand implements Callable<Integer> {
             rs.close();
             stmt.close();
 
+            // Write manifest file if metadata columns were specified
+            File manifestFile = null;
+            if (hasMetadataColumns && !dryRun && manifestRows != null && !manifestRows.isEmpty()) {
+                manifestFile = new File(outputFolder, manifestFilename);
+                try (Writer writer = new OutputStreamWriter(
+                        new FileOutputStream(manifestFile), StandardCharsets.UTF_8)) {
+                    // Write CSV header
+                    writer.write("filename");
+                    for (String colName : metadataColNames) {
+                        writer.write(",");
+                        writer.write(escapeCsvField(colName));
+                    }
+                    writer.write("\n");
+
+                    // Write data rows
+                    for (String[] row : manifestRows) {
+                        for (int i = 0; i < row.length; i++) {
+                            if (i > 0) writer.write(",");
+                            writer.write(escapeCsvField(row[i]));
+                        }
+                        writer.write("\n");
+                    }
+                }
+                System.out.println("Wrote manifest: " + manifestFile.getAbsolutePath() + " (" + manifestRows.size() + " rows)");
+            }
+
             System.out.println();
             if (dryRun) {
                 System.out.println("Dry run complete. Would export " + fileCount + " file(s) to " + outputFolder.getAbsolutePath());
+                if (hasMetadataColumns) {
+                    System.out.println("Would write manifest: " + manifestFilename + " with columns: filename," + String.join(",", metadataColNames));
+                }
             } else {
                 progress.printSummary();
                 if (skippedCount > 0) {
                     System.out.println("  Skipped: " + skippedCount + " (already exist)");
                 }
                 System.out.println("  Output folder: " + outputFolder.getAbsolutePath());
+                if (manifestFile != null) {
+                    System.out.println("  Manifest: " + manifestFile.getName());
+                }
 
                 if (fileCount > 0) {
                     System.out.println("\nTo publish these files to Solace, run:");
@@ -225,6 +305,7 @@ public class OracleExportCommand implements Callable<Integer> {
             // Log success results
             audit.addResult("filesExported", fileCount)
                  .addResult("filesSkipped", skippedCount)
+                 .addResult("manifestFile", manifestFile != null ? manifestFile.getName() : null)
                  .addResult("dryRun", dryRun);
             audit.logCompletion(0);
             return 0;
@@ -268,6 +349,21 @@ public class OracleExportCommand implements Callable<Integer> {
         if (s == null) return "null";
         if (s.length() <= maxLen) return s;
         return s.substring(0, maxLen) + "...";
+    }
+
+    /**
+     * Escape a field value for CSV output.
+     * Handles null values, quotes, commas, and newlines.
+     */
+    private String escapeCsvField(String value) {
+        if (value == null) {
+            return "";
+        }
+        // If the field contains comma, quote, or newline, wrap in quotes and escape internal quotes
+        if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
     }
 
     /**
