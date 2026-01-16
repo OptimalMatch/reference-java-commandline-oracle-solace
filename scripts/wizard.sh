@@ -992,6 +992,20 @@ wizard_oracle_export() {
     prompt filename_col "Filename column (optional)" ""
     prompt extension "File extension" ".txt"
 
+    # Metadata columns for manifest
+    echo ""
+    local metadata_cols=""
+    local manifest_file=""
+    if prompt_yes_no "Export additional metadata columns to manifest?" "n"; then
+        echo ""
+        echo "Enter comma-separated column names to include in manifest"
+        echo "(e.g., status,region,priority):"
+        read -r metadata_cols
+        if [[ -n "$metadata_cols" ]]; then
+            prompt manifest_file "Manifest filename" "manifest.csv"
+        fi
+    fi
+
     local dry_run=false
     if prompt_yes_no "Dry run (preview without writing)?" "n"; then
         dry_run=true
@@ -1007,6 +1021,8 @@ wizard_oracle_export() {
 
     [[ -n "$message_col" ]] && exec_args="$exec_args --message-column $message_col"
     [[ -n "$filename_col" ]] && exec_args="$exec_args --filename-column $filename_col"
+    [[ -n "$metadata_cols" ]] && exec_args="$exec_args --metadata-columns $metadata_cols"
+    [[ -n "$manifest_file" ]] && exec_args="$exec_args --manifest $manifest_file"
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
 
     solace_cli oracle-export $exec_args --sql "$sql_query"
@@ -1273,9 +1289,21 @@ wizard_oracle_orchestration() {
 
     # Column configuration
     echo ""
-    local message_col filename_col
+    local message_col filename_col metadata_cols manifest_file
     prompt message_col "Message column name (leave empty for first column)" ""
     prompt filename_col "Filename column (leave empty for sequential)" ""
+
+    # Metadata columns for manifest (useful for batch transforms)
+    echo ""
+    if prompt_yes_no "Export additional metadata columns to manifest?" "n"; then
+        echo ""
+        echo "Enter comma-separated column names to include in manifest"
+        echo "(e.g., status,region,priority):"
+        read -r metadata_cols
+        if [[ -n "$metadata_cols" ]]; then
+            prompt manifest_file "Manifest filename" "manifest.csv"
+        fi
+    fi
 
     # Destination queue
     echo ""
@@ -1376,6 +1404,8 @@ wizard_oracle_orchestration() {
     [[ -n "$sql_file" ]] && orch_args="$orch_args --sql-file '$sql_file'"
     [[ -n "$message_col" ]] && orch_args="$orch_args --message-column '$message_col'"
     [[ -n "$filename_col" ]] && orch_args="$orch_args --filename-column '$filename_col'"
+    [[ -n "$metadata_cols" ]] && orch_args="$orch_args --metadata-columns '$metadata_cols'"
+    [[ -n "$manifest_file" ]] && orch_args="$orch_args --manifest '$manifest_file'"
 
     # Solace connection args
     orch_args="$orch_args -H $WIZARD_SOLACE_HOST -v $WIZARD_SOLACE_VPN"
