@@ -917,6 +917,8 @@ java -jar target/solace-cli-1.0.0.jar oracle-export \
 | `--filename-column` | Column name to use as filename (default: sequential numbering) |
 | `--extension, -e` | File extension (default: `.txt`) |
 | `--prefix` | Prefix for generated filenames (default: `message_`) |
+| `--metadata-columns` | Comma-separated columns to include in manifest (e.g., `status,region,priority`) |
+| `--manifest` | Manifest filename for metadata (default: `manifest.csv`) |
 | `--overwrite` | Overwrite existing files (default: skip) |
 | `--dry-run` | Preview without writing files |
 
@@ -977,6 +979,45 @@ java -jar target/solace-cli-1.0.0.jar folder-publish \
   --pattern "*.xml" \
   --use-filename-as-correlation
 ```
+
+### Exporting with Metadata Columns
+
+When Oracle queries return additional metadata columns (e.g., status, region, priority) needed during transformation, you can export them to a CSV manifest file alongside the content files.
+
+```bash
+# Export with metadata columns to manifest
+java -jar target/solace-cli-1.0.0.jar oracle-export \
+  --db-host oracle-server \
+  --db-service ORCL \
+  --db-user scott \
+  --db-password tiger \
+  --sql "SELECT order_id, payload, status, region, priority FROM orders WHERE status = 'PENDING'" \
+  --filename-column order_id \
+  --message-column payload \
+  --metadata-columns "status,region,priority" \
+  --manifest manifest.csv \
+  --output-folder /data/export \
+  --extension .xml
+```
+
+**Output structure:**
+```
+/data/export/
+├── manifest.csv           # Metadata for all rows
+├── order_001.xml          # Content files
+├── order_002.xml
+└── order_003.xml
+```
+
+**manifest.csv contents:**
+```csv
+filename,status,region,priority
+order_001.xml,PENDING,US-EAST,HIGH
+order_002.xml,PENDING,EU-WEST,MEDIUM
+order_003.xml,PENDING,APAC,LOW
+```
+
+This manifest can be used by batch transformation scripts (Java or bash) to access metadata without re-querying the database. The approach is optimized for performance—reading one manifest file vs. thousands of sidecar files.
 
 ---
 
