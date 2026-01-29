@@ -908,7 +908,7 @@ wizard_oracle() {
     select_option "Oracle operation:" \
         "Query → Publish to Solace" \
         "Query → Export to Files" \
-        "Files → Insert to Oracle"
+        "Files → SQL to Oracle (insert/update)"
     local op_choice=$?
 
     case $op_choice in
@@ -1034,10 +1034,10 @@ wizard_oracle_insert() {
     local db_host="$1" db_port="$2" db_service="$3" db_user="$4" db_pass="$5"
 
     echo ""
-    echo "Oracle Insert: Read files and insert into database table"
+    echo "Oracle SQL: Read files from a folder and execute SQL for each file"
     echo ""
 
-    local folder table content_col filename_col pattern
+    local folder pattern
     prompt folder "Source folder" ""
 
     if [[ ! -d "$folder" ]]; then
@@ -1047,24 +1047,70 @@ wizard_oracle_insert() {
     fi
 
     prompt pattern "File pattern" "*"
-    prompt table "Target table name" ""
-    prompt content_col "Content column name" "content"
-    prompt filename_col "Filename column (optional)" ""
+
+    echo ""
+    select_option "How do you want to provide the SQL statement?" \
+        "Table name (auto-generates INSERT)" \
+        "SQL file (supports INSERT, UPDATE, DELETE, etc.)"
+    local sql_choice=$?
+
+    local table="" content_col="" filename_col="" sql_file_path=""
+
+    case $sql_choice in
+        0)
+            prompt table "Target table name" ""
+            prompt content_col "Content column name" "content"
+            prompt filename_col "Filename column (optional)" ""
+            ;;
+        1)
+            echo ""
+            echo "The SQL file should contain a single statement with placeholders:"
+            echo "  ?  = file content"
+            echo "  ?? = filename (without extension)"
+            echo ""
+            echo "Examples:"
+            echo "  INSERT INTO my_table (data, name) VALUES (?, ??)"
+            echo "  UPDATE my_table SET data = ? WHERE name = ??"
+            echo ""
+            prompt sql_file_path "SQL file path" ""
+            if [[ -n "$sql_file_path" && ! -f "$sql_file_path" ]]; then
+                println_red "File not found: $sql_file_path"
+                wait_for_key
+                return
+            fi
+            if [[ -n "$sql_file_path" ]]; then
+                echo ""
+                println_yellow "SQL file contents:"
+                cat "$sql_file_path"
+                echo ""
+            fi
+            ;;
+    esac
 
     local dry_run=false
-    if prompt_yes_no "Dry run (preview without inserting)?" "y"; then
+    if prompt_yes_no "Dry run (preview without executing)?" "y"; then
         dry_run=true
     fi
 
     echo ""
     println_yellow "Executing:"
-    echo "solace-cli oracle-insert ... --folder $folder --table $table"
+    if [[ -n "$sql_file_path" ]]; then
+        echo "solace-cli oracle-insert ... --folder $folder --sql-file $sql_file_path"
+    else
+        echo "solace-cli oracle-insert ... --folder $folder --table $table"
+    fi
     echo ""
 
     local exec_args="--db-host $db_host --db-port $db_port --db-service $db_service --db-user $db_user --db-password $db_pass"
-    exec_args="$exec_args --folder $folder --pattern '$pattern' --table $table --content-column $content_col"
+    exec_args="$exec_args --folder $folder --pattern '$pattern'"
 
-    [[ -n "$filename_col" ]] && exec_args="$exec_args --filename-column $filename_col"
+    if [[ -n "$sql_file_path" ]]; then
+        exec_args="$exec_args --sql-file '$sql_file_path'"
+    else
+        exec_args="$exec_args --table $table --content-column $content_col"
+        [[ -n "$filename_col" ]] && exec_args="$exec_args --filename-column $filename_col"
+    fi
+
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
 
     eval "solace_cli oracle-insert $exec_args"
