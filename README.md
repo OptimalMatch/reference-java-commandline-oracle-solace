@@ -1100,6 +1100,8 @@ java -jar target/solace-cli-1.0.0.jar oracle-insert \
 | `--exclude-file` | File containing patterns to exclude (checks filename) |
 | `--exclude-content` | Also check file content against exclusion patterns |
 | `--dry-run` | Preview files without inserting |
+| `--validate-sql` | Validate SQL file for safety and exit (no database connection) |
+| `--force` | Allow execution of potentially unsafe SQL (e.g., UPDATE/DELETE without WHERE) |
 
 ### Custom SQL File Format
 
@@ -1122,6 +1124,38 @@ UPDATE orders SET
     updated_timestamp = SYSDATE
 WHERE source_filename = ??
 ```
+
+### SQL Safety Validation
+
+When using `--sql-file`, the CLI checks for potentially destructive SQL patterns:
+
+- **UPDATE without WHERE** — affects all rows in the table
+- **DELETE without WHERE** — deletes all rows from the table
+- **TRUNCATE** — removes all data from the table
+- **DROP** — permanently removes a database object
+- **Multiple statements** — semicolon-separated commands
+
+If unsafe SQL is detected, execution is blocked. Use `--force` to override:
+
+```bash
+java -jar target/solace-cli-1.0.0.jar oracle-insert \
+  --db-host myhost --db-service ORCL \
+  --db-user admin --db-password secret \
+  --folder /data/files \
+  --sql-file risky_update.sql \
+  --force
+```
+
+To validate a SQL file without connecting to the database:
+
+```bash
+java -jar target/solace-cli-1.0.0.jar oracle-insert \
+  --db-host x --db-service x --db-user x --db-password x \
+  --sql-file update.sql \
+  --validate-sql
+```
+
+The interactive wizard also performs this check and prompts for confirmation before executing unsafe SQL.
 
 ---
 

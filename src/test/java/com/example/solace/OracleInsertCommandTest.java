@@ -12,6 +12,8 @@ import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
+import java.util.List;
+
 import static org.junit.Assert.*;
 
 public class OracleInsertCommandTest {
@@ -231,5 +233,157 @@ public class OracleInsertCommandTest {
 
         Integer result = command.call();
         assertEquals(Integer.valueOf(1), result);
+    }
+
+    // -------------------------------------------------------------------------
+    // SQL Safety Validation Tests
+    // -------------------------------------------------------------------------
+
+    @Test
+    public void testValidateSqlSafeInsert() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("INSERT INTO t (data, name) VALUES (?, ??)");
+        assertTrue("INSERT should be safe", warnings.isEmpty());
+    }
+
+    @Test
+    public void testValidateSqlSafeUpdateWithWhere() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("UPDATE t SET data = ? WHERE name = ??");
+        assertTrue("UPDATE with WHERE should be safe", warnings.isEmpty());
+    }
+
+    @Test
+    public void testValidateSqlUnsafeUpdateNoWhere() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("UPDATE t SET data = ?");
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).contains("UPDATE without WHERE"));
+    }
+
+    @Test
+    public void testValidateSqlUnsafeDeleteNoWhere() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("DELETE FROM t");
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).contains("DELETE without WHERE"));
+    }
+
+    @Test
+    public void testValidateSqlSafeDeleteWithWhere() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("DELETE FROM t WHERE name = ??");
+        assertTrue("DELETE with WHERE should be safe", warnings.isEmpty());
+    }
+
+    @Test
+    public void testValidateSqlTruncate() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("TRUNCATE TABLE my_table");
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).contains("TRUNCATE"));
+    }
+
+    @Test
+    public void testValidateSqlDrop() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("DROP TABLE my_table");
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).contains("DROP"));
+    }
+
+    @Test
+    public void testValidateSqlMultipleStatements() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("INSERT INTO t VALUES (?); DELETE FROM t");
+        assertFalse("Multiple statements should be flagged", warnings.isEmpty());
+        boolean found = false;
+        for (String w : warnings) {
+            if (w.contains("Multiple SQL statements")) found = true;
+        }
+        assertTrue("Should detect multiple statements", found);
+    }
+
+    @Test
+    public void testValidateSqlStripsComments() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        // SQL with comments that might look unsafe but the actual statement is safe
+        String sql = "-- This updates all rows\nUPDATE t SET data = ? WHERE id = ??";
+        List<String> warnings = command.validateSqlSafety(sql);
+        assertTrue("UPDATE with WHERE after stripping comments should be safe", warnings.isEmpty());
+    }
+
+    @Test
+    public void testValidateSqlStripsBlockComments() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        String sql = "/* bulk update */ UPDATE t SET data = ?";
+        List<String> warnings = command.validateSqlSafety(sql);
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).contains("UPDATE without WHERE"));
+    }
+
+    @Test
+    public void testValidateSqlCaseInsensitive() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        List<String> warnings = command.validateSqlSafety("update t set data = ?");
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).contains("UPDATE without WHERE"));
+    }
+
+    @Test
+    public void testValidateSqlViaValidateFlag() throws Exception {
+        // Create a safe SQL file
+        File sqlFile = tempFolder.newFile("safe.sql");
+        Files.write(sqlFile.toPath(), "INSERT INTO t VALUES (?)".getBytes(StandardCharsets.UTF_8));
+
+        int exitCode = cmd.execute("oracle-insert",
+            "--db-host", "x", "--db-service", "x",
+            "--db-user", "x", "--db-password", "x",
+            "--sql-file", sqlFile.getAbsolutePath(),
+            "--validate-sql");
+        assertEquals(0, exitCode);
+        assertTrue(sw.toString().contains("SQL validation passed"));
+    }
+
+    @Test
+    public void testValidateSqlViaValidateFlagUnsafe() throws Exception {
+        // Create an unsafe SQL file
+        File sqlFile = tempFolder.newFile("unsafe.sql");
+        Files.write(sqlFile.toPath(), "UPDATE t SET data = ?".getBytes(StandardCharsets.UTF_8));
+
+        int exitCode = cmd.execute("oracle-insert",
+            "--db-host", "x", "--db-service", "x",
+            "--db-user", "x", "--db-password", "x",
+            "--sql-file", sqlFile.getAbsolutePath(),
+            "--validate-sql");
+        assertEquals(1, exitCode);
+        assertTrue(errSw.toString().contains("UPDATE without WHERE"));
+    }
+
+    @Test
+    public void testForceOptionParsing() {
+        OracleInsertCommand command = new OracleInsertCommand();
+        CommandLine cmdLine = new CommandLine(command);
+
+        cmdLine.parseArgs(
+            "--db-host", "localhost",
+            "--db-service", "ORCL",
+            "--db-user", "user",
+            "--db-password", "pass",
+            "--folder", tempFolder.getRoot().getAbsolutePath(),
+            "--sql-file", "/some/file.sql",
+            "--force"
+        );
+
+        assertTrue(command.force);
+    }
+
+    @Test
+    public void testHelpIncludesNewOptions() {
+        int exitCode = cmd.execute("oracle-insert", "--help");
+        assertEquals(0, exitCode);
+        String output = sw.toString();
+        assertTrue(output.contains("--force"));
+        assertTrue(output.contains("--validate-sql"));
     }
 }

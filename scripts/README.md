@@ -407,6 +407,10 @@ UPDATE my_table SET data = ? WHERE name = ??
 
 The wizard (option 8 → "Files → SQL to Oracle") prompts for either a table name (auto-generates INSERT) or a SQL file path, and displays the file contents for confirmation before execution.
 
+**SQL Safety Validation:**
+
+The `oracle-insert` command automatically checks SQL files for potentially destructive patterns (UPDATE/DELETE without WHERE, TRUNCATE, DROP, multiple statements). Unsafe SQL is blocked unless `--force` is specified. Use `--validate-sql` to check a SQL file without connecting to the database. The wizard performs this check interactively and prompts for confirmation before proceeding with unsafe SQL.
+
 ### examples-perf-test.sh
 
 Demonstrates performance testing:
