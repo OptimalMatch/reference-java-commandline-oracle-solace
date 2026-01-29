@@ -21,8 +21,11 @@ SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SO
 source "${SCRIPT_DIR}/common.sh"
 
 CRON_MARKER="# solace-consume-cron"
+LOGROTATE_CRON_MARKER="# solace-consume-logrotate"
 DEFAULT_CONFIG="${HOME}/.solace-consume.conf"
 DEFAULT_LOG="${HOME}/.solace-consume.log"
+DEFAULT_LOGROTATE_CONF="${HOME}/.solace-consume.logrotate"
+DEFAULT_LOGROTATE_STATE="${HOME}/.solace-consume.logrotate.state"
 
 # -----------------------------------------------------------------------------
 # Config Loading
@@ -61,6 +64,9 @@ load_config() {
     CONSUME_COUNT="${CONSUME_COUNT:-0}"
     CONSUME_TIMEOUT="${CONSUME_TIMEOUT:-30}"
     BROWSE_ONLY="${BROWSE_ONLY:-false}"
+    NO_ACK="${NO_ACK:-false}"
+    USE_CORRELATION_ID="${USE_CORRELATION_ID:-false}"
+    VERBOSE="${VERBOSE:-false}"
     CRON_SCHEDULE="${CRON_SCHEDULE:-*/5 * * * *}"
     LOG_FILE="${LOG_FILE:-$DEFAULT_LOG}"
 
@@ -172,25 +178,105 @@ do_run() {
     args="$args -n $CONSUME_COUNT"
     args="$args -t $CONSUME_TIMEOUT"
     [[ "$BROWSE_ONLY" == "true" ]] && args="$args --browse"
+    [[ "$NO_ACK" == "true" ]] && args="$args --no-ack"
+    [[ "$USE_CORRELATION_ID" == "true" ]] && args="$args --use-correlation-id"
+    [[ "$VERBOSE" == "true" ]] && args="$args --verbose"
+
+    # Capture jar output to temp file for filtering
+    local tmp_out
+    tmp_out=$(mktemp /tmp/solace-consume-XXXXXX.out)
+    trap "rm -f '$tmp_out'" RETURN
 
     # Log start
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] Starting consume from $SOLACE_QUEUE" >> "$LOG_FILE"
 
-    # Execute
+    # Execute — capture all output to temp file
     local exit_code=0
-    eval "solace_cli consume $args" >> "$LOG_FILE" 2>&1 || exit_code=$?
+    eval "solace_cli consume $args" > "$tmp_out" 2>&1 || exit_code=$?
 
-    # Log result
+    # Extract useful lines from jar output (skip progress updates, Ctrl+C hint,
+    # Java INFO/SLF4J noise) and append to log
+    grep -v \
+        -e '^Consuming:' \
+        -e 'Press Ctrl+C' \
+        -e '^SLF4J:' \
+        -e '^[A-Z][a-z]\{2\} [0-9]' \
+        -e '^INFO:' \
+        "$tmp_out" >> "$LOG_FILE" 2>/dev/null || true
+
+    # Log result with summary
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local summary
+    summary=$(grep -o '[A-Za-z]* [0-9]* message(s)' "$tmp_out" | tail -1)
     if [[ $exit_code -eq 0 ]]; then
-        echo "[$timestamp] Consume completed successfully" >> "$LOG_FILE"
+        echo "[$timestamp] Completed${summary:+ — $summary}" >> "$LOG_FILE"
     else
-        echo "[$timestamp] Consume failed with exit code $exit_code" >> "$LOG_FILE"
+        echo "[$timestamp] Failed with exit code $exit_code${summary:+ — $summary}" >> "$LOG_FILE"
     fi
 
     return $exit_code
+}
+
+# -----------------------------------------------------------------------------
+# Logrotate
+# -----------------------------------------------------------------------------
+
+install_logrotate() {
+    local logrotate_conf="$DEFAULT_LOGROTATE_CONF"
+
+    cat > "$logrotate_conf" <<LOGROTATE_EOF
+$LOG_FILE {
+    weekly
+    rotate 4
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    dateformat -%Y%m%d
+}
+LOGROTATE_EOF
+
+    chmod 600 "$logrotate_conf"
+
+    # Add a daily cron entry to run logrotate as the current user
+    local lr_cron_cmd="0 0 * * * /usr/sbin/logrotate --state $DEFAULT_LOGROTATE_STATE $logrotate_conf $LOGROTATE_CRON_MARKER"
+
+    local existing
+    existing=$(crontab -l 2>/dev/null || true)
+    local filtered
+    filtered=$(echo "$existing" | grep -v "$LOGROTATE_CRON_MARKER" || true)
+
+    echo "$filtered
+$lr_cron_cmd" | crontab -
+
+    echo "Log rotation installed:"
+    echo "  Config:   $logrotate_conf"
+    echo "  Schedule: daily at midnight (via cron)"
+    echo "  Retains 4 weekly compressed backups"
+}
+
+remove_logrotate() {
+    local logrotate_conf="$DEFAULT_LOGROTATE_CONF"
+
+    # Remove logrotate cron entry
+    local existing
+    existing=$(crontab -l 2>/dev/null || true)
+    if echo "$existing" | grep -q "$LOGROTATE_CRON_MARKER"; then
+        local filtered
+        filtered=$(echo "$existing" | grep -v "$LOGROTATE_CRON_MARKER")
+        echo "$filtered" | crontab -
+        echo "Logrotate cron entry removed."
+    fi
+
+    # Remove logrotate config and state files
+    if [[ -f "$logrotate_conf" ]]; then
+        rm -f "$logrotate_conf"
+        echo "Logrotate config removed: $logrotate_conf"
+    fi
+    rm -f "$DEFAULT_LOGROTATE_STATE"
 }
 
 # -----------------------------------------------------------------------------
@@ -234,6 +320,21 @@ $cron_cmd" | crontab -
     echo ""
     echo "Log file: $LOG_FILE"
     echo "Output:   $OUTPUT_DIR"
+
+    # Offer logrotate setup
+    if [[ ! -f "$DEFAULT_LOGROTATE_CONF" ]]; then
+        echo ""
+        echo "Log rotation is not configured."
+        read -p "Install log rotation (weekly, 4 backups)? [y/N]: " lr_answer
+        if [[ "${lr_answer,,}" == "y" ]]; then
+            install_logrotate
+        else
+            echo "Skipped. Re-run 'install' to set up later."
+        fi
+    else
+        echo ""
+        echo "Log rotation: $DEFAULT_LOGROTATE_CONF (already installed)"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -254,6 +355,8 @@ do_uninstall() {
     else
         echo "No Solace consumer cron entry found."
     fi
+
+    remove_logrotate
 }
 
 # -----------------------------------------------------------------------------
@@ -286,11 +389,31 @@ do_status() {
     fi
     echo ""
 
+    # Check logrotate
+    echo "Log rotation:"
+    if [[ -f "$DEFAULT_LOGROTATE_CONF" ]]; then
+        echo "  $DEFAULT_LOGROTATE_CONF (installed)"
+        local lr_entry
+        lr_entry=$(crontab -l 2>/dev/null | grep "$LOGROTATE_CRON_MARKER" || true)
+        if [[ -n "$lr_entry" ]]; then
+            echo "  Cron: daily at midnight"
+        else
+            echo "  Warning: logrotate cron entry missing"
+        fi
+    else
+        echo "  Not configured (run 'install' to set up)"
+    fi
+    echo ""
+
     # Show last log entries
     local log="${LOG_FILE:-$DEFAULT_LOG}"
     echo "Recent log ($log):"
     if [[ -f "$log" ]]; then
-        tail -5 "$log" | sed 's/^/  /'
+        local log_size
+        log_size=$(du -h "$log" 2>/dev/null | cut -f1)
+        echo "  Size: $log_size"
+        echo ""
+        tail -10 "$log" | sed 's/^/  /'
     else
         echo "  No log file yet"
     fi

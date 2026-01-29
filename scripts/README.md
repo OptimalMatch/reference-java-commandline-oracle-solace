@@ -228,6 +228,7 @@ The wizard automatically:
 | `wizard.sh` | **Interactive wizard** - guided menu-driven interface |
 | `cron-consume.sh` | **Cron consumer** - scheduled queue consumption over SSL (RHEL) |
 | `cron-consume.conf.example` | Sample config for cron-consume.sh |
+| `cron-consume.logrotate.example` | Sample logrotate config for cron consumer log |
 | `common.sh` | Shared configuration and helper functions (source this) |
 | `setup-solace.sh` | Create/delete queues via SEMP API |
 | `solace-docker.sh` | Start/stop local Solace broker Docker container |
@@ -776,6 +777,9 @@ OUTPUT_DIR=/home/myuser/solace-messages
 CONSUME_COUNT=0          # 0 = all available
 CONSUME_TIMEOUT=30       # seconds
 BROWSE_ONLY=false        # true = non-destructive read
+NO_ACK=false             # true = consume without acknowledgment
+USE_CORRELATION_ID=false # true = use correlation ID as filename
+VERBOSE=false            # true = include message metadata
 
 # Cron schedule (default: every 5 minutes)
 CRON_SCHEDULE="*/5 * * * *"
@@ -790,6 +794,28 @@ On `install`, the script validates file ownership and permissions:
 - Config file must be `600` (contains passwords)
 - Keystore and truststore must not be world-readable
 - All files must be owned by the current user
+
+**Log Rotation:**
+
+On `install`, the script offers to set up user-level log rotation via `logrotate`. No root or sudo is required — a cron entry runs logrotate daily at midnight using a config in the user's home directory:
+
+- Config: `~/.solace-consume.logrotate`
+- State: `~/.solace-consume.logrotate.state`
+- Rotates weekly, keeps 4 compressed backups
+
+The `uninstall` command removes both the logrotate cron entry and config files.
+
+**Log Output:**
+
+The cron runner filters noisy jar output (Java INFO logging, progress updates, terminal hints) and logs a concise summary per run:
+
+```
+[2026-01-29 01:30:00] Starting consume from my.queue
+Connected successfully
+Consuming from queue 'my.queue'...
+Consumed 12 message(s)
+[2026-01-29 01:30:08] Completed — Consumed 12 message(s)
+```
 
 ```
 $ ./cron-consume.sh install
@@ -806,6 +832,11 @@ Cron entry installed:
 
 Log file: /home/myuser/.solace-consume.log
 Output:   /home/myuser/solace-messages
+
+Log rotation installed:
+  Config:   /home/myuser/.solace-consume.logrotate
+  Schedule: daily at midnight (via cron)
+  Retains 4 weekly compressed backups
 ```
 
 ### test-orchestration.sh

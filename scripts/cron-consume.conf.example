@@ -45,6 +45,17 @@ CONSUME_TIMEOUT=30
 # Set to true for non-destructive reads, false to consume (remove) messages.
 BROWSE_ONLY=false
 
+# No-acknowledge mode: consume messages without sending an acknowledgment.
+# Set to true to skip ack, false for normal consume-with-ack behavior.
+NO_ACK=false
+
+# Use the message's correlation ID as the output filename.
+# When false, files are named sequentially (message-001.txt, etc.).
+USE_CORRELATION_ID=false
+
+# Verbose mode: include message metadata in the output.
+VERBOSE=false
+
 # -----------------------------------------------------------------------------
 # Cron Schedule
 # -----------------------------------------------------------------------------
