@@ -184,7 +184,7 @@ sequenceDiagram
     CLI-->>User: Complete
 ```
 
-### Oracle Insert Flow
+### Oracle Insert/Update Flow
 
 ```mermaid
 sequenceDiagram
@@ -193,7 +193,7 @@ sequenceDiagram
     participant FS as File System
     participant Oracle as Oracle DB
 
-    User->>CLI: oracle-insert --folder /path --table msgs
+    User->>CLI: oracle-insert --folder /path --sql-file update.sql
     CLI->>CLI: Parse arguments
     CLI->>FS: Scan directory for files
     FS-->>CLI: List of files
@@ -205,13 +205,13 @@ sequenceDiagram
     loop For each file
         CLI->>FS: Read file content
         FS-->>CLI: File bytes
-        CLI->>Oracle: INSERT INTO table
-        Oracle-->>CLI: Row inserted
+        CLI->>Oracle: Execute SQL (INSERT/UPDATE/DELETE)
+        Oracle-->>CLI: Row affected
     end
 
     CLI->>Oracle: Commit transaction
     CLI->>Oracle: Close connection
-    CLI-->>User: Inserted N records
+    CLI-->>User: Processed N records
 ```
 
 ### Consume Command Flow
@@ -390,7 +390,9 @@ graph LR
 - **Browse** queue messages non-destructively
 - **Oracle Integration** - Query Oracle database and publish result rows as messages
 - **Oracle Export** - Export Oracle query results to files for later publishing
+- **Oracle Insert/Update** - Execute SQL (INSERT, UPDATE, DELETE) against Oracle for each file in a folder
 - **Folder Publishing** - Batch publish messages from files in a directory
+- **Scheduled Consumption** - Cron-based queue consumer with SSL keystore support for RHEL
 - **Two-Step Workflow** - Export from Oracle to files, then publish to Solace
 - **Exclusion Lists** - Filter out unwanted messages or files using flexible pattern matching
 - **Audit Logging** - JSON-formatted audit trail of command execution with parameters and results
@@ -1021,9 +1023,9 @@ This manifest can be used by batch transformation scripts (Java or bash) to acce
 
 ---
 
-## Oracle Insert from Files
+## Oracle Insert/Update from Files
 
-Read files from a folder and insert their contents into an Oracle database table. This is useful for loading message files into Oracle for processing or archiving.
+Read files from a folder and execute SQL statements against an Oracle database for each file. Use `--table` for auto-generated INSERT, or `--sql-file` for custom SQL (INSERT, UPDATE, DELETE, etc.).
 
 ```bash
 # Basic usage - insert files into a table
@@ -1101,7 +1103,7 @@ java -jar target/solace-cli-1.0.0.jar oracle-insert \
 
 ### Custom SQL File Format
 
-For complex INSERT statements, use `--sql-file`. Use `?` for the content parameter and `??` for the filename:
+Use `--sql-file` for any DML statement. Use `?` for file content and `??` for filename (without extension):
 
 ```sql
 -- insert_order.sql
@@ -1111,6 +1113,14 @@ INSERT INTO orders (
     received_timestamp,
     status
 ) VALUES (?, ??, SYSDATE, 'PENDING')
+```
+
+```sql
+-- update_order.sql
+UPDATE orders SET
+    order_data = ?,
+    updated_timestamp = SYSDATE
+WHERE source_filename = ??
 ```
 
 ---
@@ -1786,6 +1796,52 @@ Exclusion Statistics:
   Avg check time:  16.06 μs/msg
   Total overhead:  16.06 ms
 ```
+
+---
+
+## Scheduled Queue Consumption (Cron)
+
+For unattended, scheduled consumption of Solace messages on RHEL servers, use `cron-consume.sh`. It consumes messages over SSL using a Java keystore and writes each message to a file.
+
+```bash
+# Copy and edit the config file
+cp scripts/cron-consume.conf.example ~/.solace-consume.conf
+chmod 600 ~/.solace-consume.conf
+vi ~/.solace-consume.conf
+
+# Test manually
+./scripts/cron-consume.sh run
+
+# Install cron job (validates file permissions first)
+./scripts/cron-consume.sh install
+
+# Check status and recent log
+./scripts/cron-consume.sh status
+
+# Remove cron job
+./scripts/cron-consume.sh uninstall
+```
+
+The config file holds all connection, SSL, and schedule settings:
+
+```bash
+SOLACE_HOST=tcps://broker.example.com:55443
+SOLACE_VPN=default
+SOLACE_USER=myuser
+SOLACE_PASS=mypassword
+SOLACE_QUEUE=my.queue
+OUTPUT_DIR=/home/myuser/solace-messages
+KEY_STORE=/home/myuser/.ssl/keystore.jks
+KEY_STORE_PASS=changeit
+KEY_ALIAS=mykey
+TRUST_STORE=/home/myuser/.ssl/keystore.jks
+TRUST_STORE_PASS=changeit
+CONSUME_TIMEOUT=30
+BROWSE_ONLY=false          # true for non-destructive reads
+CRON_SCHEDULE="*/5 * * * *"
+```
+
+On `install`, the script validates that the config, keystore, and truststore files are owned by and readable only to the current user. See `scripts/cron-consume.conf.example` for full documentation.
 
 ---
 
