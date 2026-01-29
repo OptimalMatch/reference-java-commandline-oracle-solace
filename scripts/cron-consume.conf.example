@@ -1,0 +1,63 @@
+# =============================================================================
+# Solace Queue Consumer - Cron Configuration
+# =============================================================================
+# Copy this file to ~/.solace-consume.conf and edit with your values.
+# This file contains passwords — set permissions to 600:
+#   chmod 600 ~/.solace-consume.conf
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Solace Connection
+# -----------------------------------------------------------------------------
+SOLACE_HOST=tcps://broker.example.com:55443
+SOLACE_VPN=default
+SOLACE_USER=myuser
+SOLACE_PASS=mypassword
+SOLACE_QUEUE=my.queue
+
+# -----------------------------------------------------------------------------
+# SSL / Java KeyStore
+# -----------------------------------------------------------------------------
+# KEY_STORE and TRUST_STORE can point to the same JKS file when it contains
+# both the private key entry and the trusted CA certificates.
+KEY_STORE=/home/myuser/.ssl/keystore.jks
+KEY_STORE_PASS=changeit
+KEY_ALIAS=mykey
+TRUST_STORE=/home/myuser/.ssl/keystore.jks
+TRUST_STORE_PASS=changeit
+
+# -----------------------------------------------------------------------------
+# Output
+# -----------------------------------------------------------------------------
+# Directory where consumed messages are written as individual files.
+OUTPUT_DIR=/home/myuser/solace-messages
+
+# -----------------------------------------------------------------------------
+# Consume Behavior
+# -----------------------------------------------------------------------------
+# Number of messages to consume per run (0 = all available on the queue).
+CONSUME_COUNT=0
+
+# How long to wait for messages in seconds before exiting (0 = wait forever).
+CONSUME_TIMEOUT=30
+
+# Browse mode: read messages without removing them from the queue.
+# Set to true for non-destructive reads, false to consume (remove) messages.
+BROWSE_ONLY=false
+
+# -----------------------------------------------------------------------------
+# Cron Schedule
+# -----------------------------------------------------------------------------
+# Standard cron expression. Default: every 5 minutes.
+CRON_SCHEDULE="*/5 * * * *"
+
+# -----------------------------------------------------------------------------
+# Java (optional)
+# -----------------------------------------------------------------------------
+# Set JAVA_HOME if java is not on the default cron PATH.
+# JAVA_HOME=/usr/lib/jvm/java-11-openjdk
+
+# -----------------------------------------------------------------------------
+# Log File (optional)
+# -----------------------------------------------------------------------------
+# LOG_FILE=~/.solace-consume.log
