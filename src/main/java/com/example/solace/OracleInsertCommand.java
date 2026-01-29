@@ -1,8 +1,11 @@
 package com.example.solace;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
+import picocli.CommandLine.Spec;
+import picocli.CommandLine.Model.CommandSpec;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +20,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.regex.Pattern;
 
 import static com.example.solace.AuditLogger.maskSensitive;
 
@@ -28,6 +32,9 @@ import static com.example.solace.AuditLogger.maskSensitive;
 )
 public class OracleInsertCommand implements Callable<Integer> {
 
+    @Spec
+    CommandSpec spec;
+
     @Mixin
     OracleOptions oracleConnection;
 
@@ -35,8 +42,7 @@ public class OracleInsertCommand implements Callable<Integer> {
     AuditOptions auditOptions;
 
     @Option(names = {"--folder", "-d"},
-            description = "Source folder containing files to insert",
-            required = true)
+            description = "Source folder containing files to insert")
     File sourceFolder;
 
     @Option(names = {"--pattern", "-p"},
@@ -86,12 +92,31 @@ public class OracleInsertCommand implements Callable<Integer> {
             description = "Also check file content against exclusion patterns")
     boolean excludeByContent;
 
+    @Option(names = {"--force"},
+            description = "Allow execution of potentially unsafe SQL (e.g., UPDATE/DELETE without WHERE)")
+    boolean force;
+
+    @Option(names = {"--validate-sql"},
+            description = "Validate the SQL file for safety and exit (no database connection)")
+    boolean validateOnly;
+
     // Internal flag to track if custom SQL file used ?? for filename
     private boolean sqlFileHasFilenamePlaceholder = false;
     private ExclusionList exclusionList;
 
     @Override
     public Integer call() {
+        // Handle --validate-sql mode: validate SQL file safety and exit
+        if (validateOnly) {
+            return handleValidateSqlMode();
+        }
+
+        // Validate --folder is provided for normal execution
+        if (sourceFolder == null) {
+            System.err.println("Error: --folder is required (unless using --validate-sql)");
+            return 1;
+        }
+
         Connection dbConnection = null;
         AuditLogger audit = AuditLogger.create(auditOptions, "oracle-insert");
 
@@ -330,6 +355,21 @@ public class OracleInsertCommand implements Callable<Integer> {
                 sqlFileHasFilenamePlaceholder = content.contains("??");
                 String sql = content.trim().replace("??", "?");
                 System.out.println("Loaded SQL from file: " + sqlFile.getAbsolutePath());
+
+                // Validate SQL safety
+                List<String> warnings = validateSqlSafety(content.trim());
+                if (!warnings.isEmpty()) {
+                    System.err.println("WARNING: Potentially unsafe SQL detected:");
+                    for (String warning : warnings) {
+                        System.err.println("  - " + warning);
+                    }
+                    if (!force) {
+                        System.err.println("Use --force to execute anyway.");
+                        return null;
+                    }
+                    System.err.println("Proceeding due to --force flag.");
+                }
+
                 return sql;
             } catch (Exception e) {
                 System.err.println("Error reading SQL file: " + e.getMessage());
@@ -459,5 +499,100 @@ public class OracleInsertCommand implements Callable<Integer> {
             return false;
         }
         return exclusionList.isExcluded(filename);
+    }
+
+    /**
+     * Handle --validate-sql mode: validate the SQL file for safety and exit.
+     */
+    private Integer handleValidateSqlMode() {
+        java.io.PrintWriter out = spec.commandLine().getOut();
+        java.io.PrintWriter err = spec.commandLine().getErr();
+        if (sqlFile == null) {
+            err.println("Error: --validate-sql requires --sql-file");
+            return 1;
+        }
+        if (!sqlFile.exists()) {
+            err.println("Error: SQL file not found: " + sqlFile.getAbsolutePath());
+            return 1;
+        }
+        try {
+            String content = new String(Files.readAllBytes(sqlFile.toPath()), StandardCharsets.UTF_8);
+            if (content.trim().isEmpty()) {
+                err.println("Error: SQL file is empty: " + sqlFile.getAbsolutePath());
+                return 1;
+            }
+
+            List<String> warnings = validateSqlSafety(content.trim());
+            if (warnings.isEmpty()) {
+                out.println("SQL validation passed: " + sqlFile.getName());
+                return 0;
+            } else {
+                err.println("WARNING: Potentially unsafe SQL detected in " + sqlFile.getName() + ":");
+                for (String warning : warnings) {
+                    err.println("  - " + warning);
+                }
+                return 1;
+            }
+        } catch (Exception e) {
+            err.println("Error reading SQL file: " + e.getMessage());
+            return 1;
+        }
+    }
+
+    /**
+     * Validate SQL statement for potentially destructive operations.
+     * Returns a list of warning messages. Empty list means the SQL is safe.
+     */
+    List<String> validateSqlSafety(String sql) {
+        List<String> warnings = new ArrayList<String>();
+
+        // Normalize: strip SQL comments and collapse whitespace
+        String normalized = stripSqlComments(sql);
+        normalized = normalized.replaceAll("\\s+", " ").trim().toUpperCase();
+
+        if (normalized.isEmpty()) {
+            return warnings;
+        }
+
+        // Check for UPDATE without WHERE
+        if (normalized.startsWith("UPDATE") && !normalized.contains("WHERE")) {
+            warnings.add("UPDATE without WHERE clause will affect all rows in the table");
+        }
+
+        // Check for DELETE without WHERE
+        if (normalized.startsWith("DELETE") && !normalized.contains("WHERE")) {
+            warnings.add("DELETE without WHERE clause will delete all rows from the table");
+        }
+
+        // Check for TRUNCATE
+        if (normalized.startsWith("TRUNCATE")) {
+            warnings.add("TRUNCATE will remove all data from the table");
+        }
+
+        // Check for DROP
+        if (normalized.startsWith("DROP")) {
+            warnings.add("DROP will permanently remove the database object");
+        }
+
+        // Check for multiple statements (semicolon followed by another statement)
+        if (MULTIPLE_STATEMENTS_PATTERN.matcher(normalized).find()) {
+            warnings.add("Multiple SQL statements detected");
+        }
+
+        return warnings;
+    }
+
+    private static final Pattern MULTIPLE_STATEMENTS_PATTERN =
+        Pattern.compile(";\\s*\\S");
+
+    /**
+     * Strip SQL comments (-- line comments and block comments).
+     */
+    private String stripSqlComments(String sql) {
+        // Remove block comments /* ... */
+        String result = sql.replaceAll("/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/", " ");
+        // Remove line comments -- ...
+        result = result.replaceAll("--[^\r\n]*", " ");
+        return result;
     }
 }

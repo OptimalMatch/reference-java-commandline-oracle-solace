@@ -1087,6 +1087,33 @@ wizard_oracle_insert() {
             ;;
     esac
 
+    # SQL safety validation for custom SQL files
+    local force_flag=""
+    if [[ -n "$sql_file_path" ]]; then
+        local validate_output
+        validate_output=$(solace_cli oracle-insert \
+            --db-host "$db_host" --db-service "$db_service" \
+            --db-user "$db_user" --db-password "$db_pass" \
+            --sql-file "$sql_file_path" --validate-sql 2>&1)
+        local validate_exit=$?
+
+        if [[ $validate_exit -ne 0 ]]; then
+            echo ""
+            println_red "SQL safety warnings:"
+            echo "$validate_output" | while IFS= read -r line; do
+                println_red "  $line"
+            done
+            echo ""
+            if prompt_yes_no "This SQL may be destructive. Continue anyway?" "n"; then
+                force_flag="--force"
+            else
+                println_yellow "Aborted."
+                wait_for_key
+                return
+            fi
+        fi
+    fi
+
     local dry_run=false
     if prompt_yes_no "Dry run (preview without executing)?" "y"; then
         dry_run=true
@@ -1112,6 +1139,7 @@ wizard_oracle_insert() {
     fi
 
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
+    [[ -n "$force_flag" ]] && exec_args="$exec_args $force_flag"
 
     eval "solace_cli oracle-insert $exec_args"
 
