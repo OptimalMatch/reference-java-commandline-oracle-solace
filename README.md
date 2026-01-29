@@ -1872,10 +1872,13 @@ TRUST_STORE=/home/myuser/.ssl/keystore.jks
 TRUST_STORE_PASS=changeit
 CONSUME_TIMEOUT=30
 BROWSE_ONLY=false          # true for non-destructive reads
+NO_ACK=false               # true to skip acknowledgment
+USE_CORRELATION_ID=false   # true to use correlation ID as filename
+VERBOSE=false              # true to include message metadata
 CRON_SCHEDULE="*/5 * * * *"
 ```
 
-On `install`, the script validates that the config, keystore, and truststore files are owned by and readable only to the current user. See `scripts/cron-consume.conf.example` for full documentation.
+On `install`, the script validates that the config, keystore, and truststore files are owned by and readable only to the current user. It also offers to set up user-level log rotation via `logrotate` (no sudo required) — rotates weekly, keeps 4 compressed backups. The cron runner filters noisy jar output and logs concise run summaries. See `scripts/cron-consume.conf.example` for full documentation.
 
 ---
 
