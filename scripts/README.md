@@ -70,7 +70,7 @@ Enter choice:
 | **7) Performance test** | Run throughput and latency benchmarks |
 | **t) Test queue orchestration** | Run automated test suite for queue orchestration |
 | **o) Test Oracle orchestration** | Run automated test suite for Oracle orchestration |
-| **8) Oracle operations** | Database integration (publish, export, insert) |
+| **8) Oracle operations** | Database integration (publish, export, insert/update via SQL file) |
 | **9) Configure connection** | Change Solace host, VPN, credentials, and SSL/TLS settings |
 | **s) Queue setup** | Create/delete queues via SEMP API |
 
@@ -226,6 +226,8 @@ The wizard automatically:
 | Script | Description |
 |--------|-------------|
 | `wizard.sh` | **Interactive wizard** - guided menu-driven interface |
+| `cron-consume.sh` | **Cron consumer** - scheduled queue consumption over SSL (RHEL) |
+| `cron-consume.conf.example` | Sample config for cron-consume.sh |
 | `common.sh` | Shared configuration and helper functions (source this) |
 | `setup-solace.sh` | Create/delete queues via SEMP API |
 | `solace-docker.sh` | Start/stop local Solace broker Docker container |
@@ -383,13 +385,27 @@ Demonstrates queue operations:
 Demonstrates Oracle integration:
 - oracle-publish: Query → Publish
 - oracle-export: Query → Files
-- oracle-insert: Files → Table
-- SQL file support
+- oracle-insert: Files → Table (INSERT, UPDATE, DELETE via SQL file)
+- SQL file support with `?` (content) and `??` (filename) placeholders
 - Column mapping
 - Dry run mode
 - Two-step workflow
 
 **Note:** Requires Oracle database. Script shows command syntax.
+
+**SQL File for INSERT/UPDATE:**
+
+The `oracle-insert` command accepts a `--sql-file` option with any DML statement. Use `?` for file content and `??` for filename (without extension):
+
+```sql
+-- Insert example
+INSERT INTO my_table (data, name) VALUES (?, ??)
+
+-- Update example
+UPDATE my_table SET data = ? WHERE name = ??
+```
+
+The wizard (option 8 → "Files → SQL to Oracle") prompts for either a table name (auto-generates INSERT) or a SQL file path, and displays the file contents for confirmation before execution.
 
 ### examples-perf-test.sh
 
@@ -706,6 +722,87 @@ done
 ```
 
 Or use a Java transform JAR for better performance with large datasets (single JVM instance, manifest loaded once into memory).
+
+### cron-consume.sh
+
+Non-interactive script for scheduled Solace queue consumption over SSL using Java keystore. Designed for unattended execution on RHEL via cron.
+
+```bash
+# Run the consumer manually
+./cron-consume.sh run
+
+# Install cron entry for the current user
+./cron-consume.sh install
+
+# Remove cron entry
+./cron-consume.sh uninstall
+
+# Check cron status and recent log entries
+./cron-consume.sh status
+
+# Use a custom config file
+./cron-consume.sh run /path/to/my-config.conf
+```
+
+**Configuration:**
+
+Copy `cron-consume.conf.example` to `~/.solace-consume.conf` and edit:
+
+```bash
+# Solace connection
+SOLACE_HOST=tcps://broker.example.com:55443
+SOLACE_VPN=default
+SOLACE_USER=myuser
+SOLACE_PASS=mypassword
+SOLACE_QUEUE=my.queue
+
+# SSL / Java KeyStore
+# KEY_STORE and TRUST_STORE can point to the same JKS file when it
+# contains both the private key entry and trusted CA certificates.
+KEY_STORE=/home/myuser/.ssl/keystore.jks
+KEY_STORE_PASS=changeit
+KEY_ALIAS=mykey
+TRUST_STORE=/home/myuser/.ssl/keystore.jks
+TRUST_STORE_PASS=changeit
+
+# Output directory for consumed message files
+OUTPUT_DIR=/home/myuser/solace-messages
+
+# Consume behavior
+CONSUME_COUNT=0          # 0 = all available
+CONSUME_TIMEOUT=30       # seconds
+BROWSE_ONLY=false        # true = non-destructive read
+
+# Cron schedule (default: every 5 minutes)
+CRON_SCHEDULE="*/5 * * * *"
+
+# Optional: set JAVA_HOME for cron's minimal PATH
+# JAVA_HOME=/usr/lib/jvm/java-11-openjdk
+```
+
+**Security:**
+
+On `install`, the script validates file ownership and permissions:
+- Config file must be `600` (contains passwords)
+- Keystore and truststore must not be world-readable
+- All files must be owned by the current user
+
+```
+$ ./cron-consume.sh install
+Installing Solace consumer cron job...
+
+Checking file security...
+  Config file: OK (/home/myuser/.solace-consume.conf)
+  Key store:   OK (/home/myuser/.ssl/keystore.jks)
+  Trust store: same as key store
+All security checks passed.
+
+Cron entry installed:
+  */5 * * * * /opt/solace-cli/scripts/cron-consume.sh run /home/myuser/.solace-consume.conf # solace-consume-cron
+
+Log file: /home/myuser/.solace-consume.log
+Output:   /home/myuser/solace-messages
+```
 
 ### test-orchestration.sh
 
