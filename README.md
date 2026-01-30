@@ -1366,6 +1366,9 @@ regex:^test-[a-z]+\.json$
 | `oracle-publish` | Correlation ID + Content | N/A (always checks both) |
 | `copy-queue` | Correlation ID | Message content |
 | `oracle-insert` | Filename | File content |
+| `perf-test` | Correlation ID | Message content |
+
+The interactive wizard (`scripts/wizard.sh`) also supports exclusion filtering for all of the above commands. When using the wizard, you will be prompted with "Use an exclusion file to filter?" for each supported operation.
 
 ### Usage Examples
 

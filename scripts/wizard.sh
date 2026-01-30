@@ -34,6 +34,9 @@ WIZARD_CLIENT_KEY=""
 WIZARD_CA_CERT=""
 WIZARD_SKIP_CERT_VALIDATION=false
 
+# Exclusion filter state
+WIZARD_EXCLUDE_ARGS=""
+
 # -----------------------------------------------------------------------------
 # Color Functions (use printf for portability)
 # -----------------------------------------------------------------------------
@@ -328,6 +331,38 @@ build_connection_args() {
     echo "$args"
 }
 
+# Build exclusion filter arguments
+# Args: $1 = "true" if command supports --exclude-content, $2 = "true" if command supports --exclude-rate
+prompt_exclusion_options() {
+    local has_content="${1:-true}"
+    local has_rate="${2:-false}"
+    WIZARD_EXCLUDE_ARGS=""
+
+    if prompt_yes_no "Use an exclusion file to filter?" "n"; then
+        local exclude_file
+        prompt exclude_file "Exclusion file path" ""
+
+        if [[ -n "$exclude_file" ]]; then
+            if [[ ! -f "$exclude_file" ]]; then
+                println_red "Warning: File not found: $exclude_file"
+            fi
+            WIZARD_EXCLUDE_ARGS="--exclude-file '$exclude_file'"
+
+            if [[ "$has_content" == "true" ]]; then
+                if prompt_yes_no "Also exclude by content matching?" "n"; then
+                    WIZARD_EXCLUDE_ARGS="$WIZARD_EXCLUDE_ARGS --exclude-content"
+                fi
+            fi
+
+            if [[ "$has_rate" == "true" ]]; then
+                local exclude_rate
+                prompt exclude_rate "Exclusion rate % of messages matching patterns (0-100)" "10"
+                WIZARD_EXCLUDE_ARGS="$WIZARD_EXCLUDE_ARGS --exclude-rate $exclude_rate"
+            fi
+        fi
+    fi
+}
+
 # -----------------------------------------------------------------------------
 # Connection Setup
 # -----------------------------------------------------------------------------
@@ -567,6 +602,9 @@ wizard_consume() {
         verbose=true
     fi
 
+    # Exclusion filtering
+    prompt_exclusion_options "true" "false"
+
     # Build and execute command
     echo ""
     println_yellow "Executing:"
@@ -584,6 +622,7 @@ wizard_consume() {
     [[ "$verbose" == "true" ]] && args="$args --verbose"
     [[ -n "$output_dir" ]] && args="$args -o '$output_dir'"
     [[ "$use_correlation" == "true" ]] && args="$args --use-correlation-id"
+    [[ -n "$WIZARD_EXCLUDE_ARGS" ]] && args="$args $WIZARD_EXCLUDE_ARGS"
 
     eval "solace_cli consume $args"
 
@@ -652,6 +691,9 @@ wizard_folder_publish() {
         dry_run=true
     fi
 
+    # Exclusion filtering
+    prompt_exclusion_options "true" "false"
+
     # Build and execute
     echo ""
     println_yellow "Executing:"
@@ -667,6 +709,7 @@ wizard_folder_publish() {
     [[ "$use_filename_correlation" == "true" ]] && args="$args --use-filename-as-correlation"
     [[ -n "$sort_by" ]] && args="$args --sort $sort_by"
     [[ "$dry_run" == "true" ]] && args="$args --dry-run"
+    [[ -n "$WIZARD_EXCLUDE_ARGS" ]] && args="$args $WIZARD_EXCLUDE_ARGS"
 
     eval "solace_cli folder-publish $args '$folder'"
 
@@ -713,6 +756,9 @@ wizard_copy_queue() {
         dry_run=true
     fi
 
+    # Exclusion filtering
+    prompt_exclusion_options "true" "false"
+
     # Build and execute
     echo ""
     println_yellow "Executing:"
@@ -728,6 +774,7 @@ wizard_copy_queue() {
     [[ $move_mode -eq 1 ]] && args="$args --move"
     [[ "$preserve_props" == "true" ]] && args="$args --preserve-properties"
     [[ "$dry_run" == "true" ]] && args="$args --dry-run"
+    [[ -n "$WIZARD_EXCLUDE_ARGS" ]] && args="$args $WIZARD_EXCLUDE_ARGS"
 
     eval "solace_cli copy-queue $args"
 
@@ -781,6 +828,9 @@ wizard_perf_test() {
         prompt threads "Publisher threads" "1"
     fi
 
+    # Exclusion filtering (perf-test also supports --exclude-rate)
+    prompt_exclusion_options "true" "true"
+
     # Build and execute
     echo ""
     println_yellow "Executing:"
@@ -795,6 +845,7 @@ wizard_perf_test() {
     [[ "$measure_latency" == "true" ]] && args="$args --latency"
     [[ -n "$rate" ]] && args="$args --rate $rate"
     [[ "$threads" != "1" ]] && args="$args --threads $threads"
+    [[ -n "$WIZARD_EXCLUDE_ARGS" ]] && args="$args $WIZARD_EXCLUDE_ARGS"
 
     eval "solace_cli perf-test $args"
 
@@ -953,6 +1004,9 @@ wizard_oracle_publish() {
         dry_run=true
     fi
 
+    # Exclusion filtering (oracle-publish always checks content, no --exclude-content flag)
+    prompt_exclusion_options "false" "false"
+
     # Build and execute
     echo ""
     println_yellow "Executing:"
@@ -967,6 +1021,7 @@ wizard_oracle_publish() {
     [[ -n "$message_col" ]] && exec_args="$exec_args --message-column $message_col"
     [[ -n "$correlation_col" ]] && exec_args="$exec_args --correlation-column $correlation_col"
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
+    [[ -n "$WIZARD_EXCLUDE_ARGS" ]] && exec_args="$exec_args $WIZARD_EXCLUDE_ARGS"
 
     eval "solace_cli oracle-publish $exec_args --sql '$sql_query'"
 
@@ -1119,6 +1174,9 @@ wizard_oracle_insert() {
         dry_run=true
     fi
 
+    # Exclusion filtering
+    prompt_exclusion_options "true" "false"
+
     echo ""
     println_yellow "Executing:"
     if [[ -n "$sql_file_path" ]]; then
@@ -1140,6 +1198,7 @@ wizard_oracle_insert() {
 
     [[ "$dry_run" == "true" ]] && exec_args="$exec_args --dry-run"
     [[ -n "$force_flag" ]] && exec_args="$exec_args $force_flag"
+    [[ -n "$WIZARD_EXCLUDE_ARGS" ]] && exec_args="$exec_args $WIZARD_EXCLUDE_ARGS"
 
     eval "solace_cli oracle-insert $exec_args"
 
