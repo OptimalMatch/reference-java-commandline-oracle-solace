@@ -62,15 +62,15 @@ Enter choice:
 | Option | Description |
 |--------|-------------|
 | **1) Publish message** | Send messages manually, from file, or generate test messages |
-| **2) Consume messages** | Receive messages with browse, consume, or no-ack modes |
-| **3) Folder publish** | Batch publish all files from a directory |
-| **4) Copy/Move queue** | Transfer messages between queues |
+| **2) Consume messages** | Receive messages with browse, consume, or no-ack modes; optional exclusion filtering |
+| **3) Folder publish** | Batch publish all files from a directory; optional exclusion filtering |
+| **4) Copy/Move queue** | Transfer messages between queues; optional exclusion filtering |
 | **5) Queue orchestration** | Consume → Transform → Publish workflow (single or batch mode) |
 | **6) Oracle orchestration** | Oracle Query → Transform → Publish workflow (single or batch mode) |
-| **7) Performance test** | Run throughput and latency benchmarks |
+| **7) Performance test** | Run throughput and latency benchmarks; optional exclusion filtering with overhead measurement |
 | **t) Test queue orchestration** | Run automated test suite for queue orchestration |
 | **o) Test Oracle orchestration** | Run automated test suite for Oracle orchestration |
-| **8) Oracle operations** | Database integration (publish, export, insert/update via SQL file) |
+| **8) Oracle operations** | Database integration (publish, export, insert/update via SQL file); optional exclusion filtering |
 | **9) Configure connection** | Change Solace host, VPN, credentials, and SSL/TLS settings |
 | **s) Queue setup** | Create/delete queues via SEMP API |
 
@@ -120,6 +120,7 @@ Timeout in seconds (0=wait forever) [30]:
 
 Save messages to files? [y/N]:
 Show verbose output with metadata? [Y/n]:
+Use an exclusion file to filter? [y/N]:
 ```
 
 ### Example: Queue Setup via SEMP
